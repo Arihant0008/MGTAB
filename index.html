@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Twitter Bot Detector — R-GCN</title>
+
+  <!-- Cytoscape -->
+  <script src="https://unpkg.com/cytoscape@3.23.0/dist/cytoscape.min.js"></script>
+
+  <style>
+    :root{
+      --bg-a: #e6f2f8;
+      --accent: #137ec1;
+      --muted: #657786;
+      --card-bg: #ffffff;
+      --success: #51cf66;
+      --danger: #ff6b6b;
+      --gold: #f5a623;
+      --glass: rgba(255, 255, 255, 0.7);
+      --shadow-lg: 0 18px 50px rgba(18,38,63,0.12);
+      --radius: 14px;
+    }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: "Inter", "Segoe UI", system-ui, -apple-system, "Roboto", "Helvetica Neue", Arial;
+      background: linear-gradient(180deg,#bfe0e9 0%, #96c7d5 45%, #bfe0e9 100%);
+      -webkit-font-smoothing:antialiased;
+      -moz-osx-font-smoothing:grayscale;
+      color:#0f1724;
+      padding:28px;
+    }
+
+    .page {
+      max-width:1150px;
+      margin:0 auto;
+    }
+
+    header {
+      text-align:center;
+      margin-bottom:18px;
+    }
+    h1 { color: var(--accent); font-size:2.2rem; margin-bottom:6px; display:inline-flex; gap:10px; align-items:center;}
+    h1 .logo { font-size:1.2rem; }
+    .subtitle { color:var(--muted); margin-bottom:8px; font-weight:500;}
+
+    /* container card */
+    .panel {
+      background: var(--card-bg);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      padding:22px;
+      overflow:hidden;
+    }
+
+    .top-row { display:flex; gap:20px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+    .model-meta { display:flex; gap:12px; align-items:center; color:var(--muted); font-weight:600; }
+
+    /* form & grid */
+    form { margin-top:18px; }
+    .form-grid { display:grid; grid-template-columns: 1fr 1fr; gap:18px; margin-bottom:18px; }
+    .card { background: #fbfdff; border-radius:12px; padding:14px; border:1px solid rgba(15,23,36,0.03); transition: transform .18s ease, box-shadow .18s ease; }
+    .card:hover{ transform: translateY(-4px); box-shadow: 0 10px 30px rgba(2,6,23,0.04) }
+    .card h3 { margin:0 0 10px 0; color:#0f1724; font-size:1rem; display:flex; align-items:center; gap:8px; border-bottom:2px solid rgba(29,161,242,0.06); padding-bottom:8px; }
+
+    .field { margin-bottom:12px; }
+    label { display:block; font-size:0.95rem; margin-bottom:6px; color:#0f1724; font-weight:600; }
+    input[type="number"], input[type="text"] {
+      width:100%; padding:10px 12px; border-radius:10px; border:1px solid #e6eef6; font-size:0.95rem; transition: box-shadow .12s, transform .12s;
+    }
+    input[type="number"]:focus, input[type="text"]:focus { outline:none; box-shadow: 0 6px 18px rgba(13,139,217,0.09); transform: translateY(-1px); border-color: var(--accent); }
+
+    /* ---- UPDATED: vertical checkbox layout & larger font ---- */
+    .checkbox-row {
+      display: flex;
+      flex-direction: column;     /* STACK vertically */
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .checkbox-row label {
+      font-size: 1.02rem;            /* slightly larger label text */
+      font-weight: 700;
+      color: #0f1724;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      transform: scale(1.18);      /* larger checkbox for better visibility/tap */
+      cursor: pointer;
+      width:18px; height:18px;
+    }
+
+    .checkbox-row label:hover { color: var(--accent); }
+
+    /* submit */
+    .actions { display:flex; gap:12px; align-items:center; margin-top:8px; }
+    .btn {
+      background: linear-gradient(135deg, var(--accent), #0d8bd9);
+      color:white; border:none; padding:12px 18px; border-radius:10px; font-weight:700; cursor:pointer;
+      transition: transform .12s ease, box-shadow .12s ease;
+      display:inline-flex; gap:10px; align-items:center;
+    }
+    .btn:hover{ transform: translateY(-3px); box-shadow: 0 14px 34px rgba(13,139,217,0.14) }
+    .btn:disabled{ opacity:0.65; cursor:not-allowed; transform:none; }
+
+    .micro { color:var(--muted); font-size:0.9rem; margin-top:8px; }
+
+    /* PREMIUM result card */
+    .result-wrap { margin-top:18px; display:flex; gap:18px; align-items:flex-start; flex-wrap:wrap; }
+    .result-card {
+      flex:1 1 100%;
+      border-radius:14px;
+      padding:18px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.96), rgba(250,250,250,0.96));
+      box-shadow: 0 12px 30px rgba(18,38,63,0.06);
+      display:flex; gap:18px; align-items:center; justify-content:space-between;
+      transition: transform .18s;
+    }
+    .result-card.premium { border-left:6px solid rgba(0,0,0,0.03); }
+    .result-left { display:flex; gap:16px; align-items:center; }
+    .badge {
+      width:76px; height:76px; border-radius:14px; display:flex; align-items:center; justify-content:center; font-weight:800; font-size:26px; color:white;
+      box-shadow: 0 10px 30px rgba(13,139,217,0.12);
+    }
+    .badge.human { background: linear-gradient(180deg, var(--success), #2ea24a); }
+    .badge.bot { background: linear-gradient(180deg, var(--danger), #d04545); }
+    .badge.unknown { background: linear-gradient(180deg, var(--gold), #e28b1f); color:#fff; }
+
+    .result-body { flex:1; min-width:240px; }
+    .result-title { font-size:1.3rem; font-weight:800; color:#0f1724; display:flex; gap:12px; align-items:center; }
+    .confidence { margin-top:8px; font-weight:700; color:#0f1724; }
+    .confidence-fill { 
+      height:100%; width:0; display:flex; align-items:center; justify-content:center; color:transparent; font-weight:800; border-radius:999px; transition: width 900ms cubic-bezier(.2,.9,.25,1), background 400ms;
+     }
+
+    .confidence-fill { height:100%; width:0; display:flex; align-items:center; justify-content:center; color:#0b1220; font-weight:800; border-radius:999px; transition: width 900ms cubic-bezier(.2,.9,.25,1), background 400ms; }
+
+    .result-meta { color:var(--muted); font-size:0.95rem; margin-top:10px; }
+
+    .result-right { min-width:220px; display:flex; flex-direction:column; gap:8px; align-items:flex-end; }
+    .pill { background: rgba(0,0,0,0.04); padding:8px 10px; border-radius:12px; font-weight:700; color:#0f1724; }
+
+    /* Graph panel */
+    #graphPanel { margin-top:18px; background: #fff; border-radius:12px; padding:12px; border:1px solid rgba(2,6,23,0.04); }
+    .graph-top { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; }
+    .legend { display:flex; gap:14px; align-items:center; color:var(--muted); font-weight:600; }
+    .legend .sw { width:12px; height:12px; border-radius:4px; display:inline-block; margin-right:6px; }
+    #cy { width:100%; height:420px; border-radius:10px; background: linear-gradient(180deg, rgba(250,250,252,1), rgba(250,250,252,1)); }
+
+    .graph-controls { display:flex; gap:8px; align-items:center; }
+    .graph-controls button{ background:#f3f6fb; border:1px solid rgba(15,23,36,0.04); padding:8px 10px; border-radius:8px; cursor:pointer; font-weight:700; }
+
+    /* Loading overlay full screen */
+    .overlay {
+      position: fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:9999;
+      background: rgba(7,18,33,0.45);
+      backdrop-filter: blur(3px);
+    }
+    .overlay.show { display:flex; }
+    .overlay-card { background: var(--card-bg); padding:24px 30px; border-radius:12px; display:flex; gap:18px; align-items:center; box-shadow:var(--shadow-lg); }
+    .spinner {
+      width:44px; height:44px; border-radius:50%; border:4px solid rgba(0,0,0,0.06); border-top:4px solid var(--accent); animation: spin 1s linear infinite;
+    }
+    @keyframes spin{ to{ transform:rotate(360deg) } }
+
+    /* small responsive */
+    @media (max-width:900px) {
+      .form-grid { grid-template-columns: 1fr; }
+      .result-right { align-items:flex-start; }
+      #cy { height:320px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <h1><span class="logo">🤖</span> Twitter Bot Detector</h1>
+      <div class="subtitle">Powered by R-GCN Graph Neural Network</div>
+    </header>
+
+    <div class="panel">
+      <div class="top-row">
+        <div class="model-meta">
+          <div>📌 Model: <strong>R-GCN</strong></div>
+          <div>📈 Test Accuracy: <strong>91%</strong></div>
+          <div>🔗 Multi-Relational Graph</div>
+        </div>
+        <div class="micro">Tip: Use realistic values — the graph shows which neighbors influenced the decision.</div>
+      </div>
+
+      <form id="botDetectionForm" autocomplete="off" novalidate>
+        <div class="form-grid" role="region" aria-label="Bot detection inputs">
+          <div class="card">
+            <h3>📈 Account Metrics</h3>
+            <div class="field"><label>Followers Count</label><input name="followers_count" type="number" min="0" value="500"></div>
+            <div class="field"><label>Friends Count (Following)</label><input name="friends_count" type="number" min="0" value="300"></div>
+            <div class="field"><label>Statuses Count (Tweets)</label><input name="statuses_count" type="number" min="0" value="1000"></div>
+            <div class="field"><label>Listed Count</label><input name="listed_count" type="number" min="0" value="5"></div>
+            <div class="field"><label>Favourites Count (Likes)</label><input name="favourites_count" type="number" min="0" value="800"></div>
+            <div class="field"><label>Account Age (Days)</label><input name="created_at" type="number" min="0" value="365"></div>
+          </div>
+
+          <div class="card">
+            <h3>⚙️ Profile Settings</h3>
+            <div class="checkbox-row">
+              <label><input type="checkbox" name="verified"> Verified Account</label>
+              <label><input type="checkbox" name="default_profile" checked> Default Profile</label>
+              <label><input type="checkbox" name="default_profile_image"> Default Profile Image</label>
+              <label><input type="checkbox" name="geo_enabled"> Geo-location Enabled</label>
+              <label><input type="checkbox" name="profile_use_background_image" checked> Has Background Image</label>
+              <label><input type="checkbox" name="has_URL" checked> Has URL</label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>📝 Text Features</h3>
+            <div class="field"><label>Screen Name Length</label><input name="screen_name_length" type="number" min="1" max="15" value="10"></div>
+            <div class="field"><label>Name Length</label><input name="name_length" type="number" min="1" max="50" value="12"></div>
+            <div class="field"><label>Description Length</label><input name="description_length" type="number" min="0" max="160" value="80"></div>
+            <div class="field"><label>Followers/Friends Ratio</label><input name="followers_friends_ratios" type="number" step="0.01" value="1.67"></div>
+            <div class="micro">Tip: ratio = followers / friends (server side capped).</div>
+          </div>
+
+          <div class="card">
+            <h3>🎨 Profile Appearance</h3>
+            <div class="checkbox-row">
+              <label><input type="checkbox" name="default_profile_background_color"> Default Background Color</label>
+              <label><input type="checkbox" name="default_profile_sidebar_fill_color"> Default Sidebar Fill</label>
+              <label><input type="checkbox" name="default_profile_sidebar_border_color"> Default Sidebar Border</label>
+              <label><input type="checkbox" name="profile_background_image_URL"> Background Image URL</label>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>🔗 Relationship Features</h3>
+            <div class="field"><label>Follower Count</label><input name="follower_count" type="number" min="0" value="500"></div>
+            <div class="field"><label>Friend Count</label><input name="friend_count" type="number" min="0" value="300"></div>
+            <div class="field"><label>Mention Count</label><input name="mention_count" type="number" min="0" value="50"></div>
+            <div class="field"><label>Reply Count</label><input name="reply_count" type="number" min="0" value="20"></div>
+            <div class="field"><label>Quote Count</label><input name="quote_count" type="number" min="0" value="10"></div>
+            <div class="field"><label>Shared Hashtags</label><input name="shared_hashtags" type="number" min="0" value="5"></div>
+            <div class="field"><label>Shared URLs</label><input name="shared_urls" type="number" min="0" value="3"></div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="submitBtn" class="btn" type="submit">🔍 Detect Bot</button>
+          <div class="micro">Press Enter or click Detect — server will compute graph & prediction.</div>
+        </div>
+      </form>
+
+      <!-- RESULT -->
+      <div class="result-wrap">
+        <div class="result-card premium" id="resultCard" aria-live="polite" role="status" style="display:none;">
+          <div class="result-left">
+            <div id="badge" class="badge human">✓</div>
+            <div class="result-body">
+              <div class="result-title" id="resultTitle">Human Account</div>
+              <div class="confidence" id="confText">98.83%</div>
+              <div class="confidence-bar"><div id="confFill" class="confidence-fill" style="background:linear-gradient(90deg,#51cf66,#2ea24a);width:0%"></div></div>
+              <div class="result-meta" id="resultDesc">This account appears to be a genuine human user.</div>
+            </div>
+          </div>
+          <div class="result-right">
+            <div class="pill" id="neighborInfo">Neighbors: —</div>
+            <div class="pill" id="explainTag">Top reason: Graph neighborhood</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- GRAPH -->
+      <div id="graphPanel" style="display:none;">
+        <div class="graph-top">
+          <div class="legend">
+            <div><span class="sw" style="background:#ff6b6b"></span> Bot</div>
+            <div><span class="sw" style="background:#51cf66"></span> Human</div>
+            <div><span class="sw" style="background:#f5a623"></span> New node</div>
+          </div>
+          <div class="graph-controls">
+            <button id="zoomIn">+</button>
+            <button id="zoomOut">−</button>
+            <button id="fitBtn">Fit</button>
+            <button id="centerBtn">Center</button>
+          </div>
+        </div>
+        <div id="cy"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="overlay" id="overlay">
+    <div class="overlay-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>
+        <div style="font-weight:800; margin-bottom:6px">Analyzing account with R-GCN</div>
+        <div style="color:var(--muted)">This may take a moment — building graph & running inference.</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(function(){
+  // If you're running Live Server (127.0.0.1:5500), use Flask on 5000 as API.
+  const API_URL = (window.location.origin.includes('5500') ? 'http://localhost:5000/predict' : '/predict');
+
+  const form = document.getElementById('botDetectionForm');
+  const overlay = document.getElementById('overlay');
+  const submitBtn = document.getElementById('submitBtn');
+
+  const resultCard = document.getElementById('resultCard');
+  const badge = document.getElementById('badge');
+  const resultTitle = document.getElementById('resultTitle');
+  const confText = document.getElementById('confText');
+  const confFill = document.getElementById('confFill');
+  const resultDesc = document.getElementById('resultDesc');
+  const neighborInfo = document.getElementById('neighborInfo');
+
+  const graphPanel = document.getElementById('graphPanel');
+
+  // Helpers
+  function setLoading(on){
+    if(on) overlay.classList.add('show'); else overlay.classList.remove('show');
+    submitBtn.disabled = on;
+  }
+  function toNumber(v, d=0){ const n = Number(v); return Number.isFinite(n) ? n : d; }
+
+  function collectForm(){
+    const data = {};
+    document.querySelectorAll('input[type="number"], input[type="text"]').forEach(i=>data[i.name] = toNumber(i.value,0));
+    document.querySelectorAll('input[type="checkbox"]').forEach(cb=>data[cb.name] = cb.checked ? 1 : 0);
+    return data;
+  }
+
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    setLoading(true);
+    resultCard.style.display='none';
+    graphPanel.style.display='none';
+    try{
+      const payload = collectForm();
+      const resp = await fetch(API_URL, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(payload)
+      });
+      if(!resp.ok){
+        throw new Error('Server ' + resp.status + ' ' + resp.statusText);
+      }
+      const res = await resp.json();
+      // expected: prediction (0/1), confidence (0..1 or 0..100), probabilities, subgraph, new_node_index, neighbors
+      const pred = (typeof res.prediction === 'number') ? res.prediction : (res.prediction === true ? 1 : 0);
+      let conf = Number(res.confidence) || 0;
+      if(conf <= 1) conf = conf * 100;
+      conf = Math.max(0, Math.min(100, conf));
+      // update card
+      if(pred === 1){
+        badge.className='badge bot'; badge.textContent='🤖';
+        resultTitle.textContent='BOT DETECTED';
+        confFill.style.background = 'linear-gradient(90deg,#ff6b6b,#d24b4b)';
+        resultDesc.textContent = res.message || 'This account shows bot-like patterns.';
+      } else {
+        badge.className='badge human'; badge.textContent='✓';
+        resultTitle.textContent='HUMAN ACCOUNT';
+        confFill.style.background = 'linear-gradient(90deg,#51cf66,#2ea24a)';
+        resultDesc.textContent = res.message || 'This account appears to be a genuine human user.';
+      }
+      confText.textContent = conf.toFixed(2) + '%';
+      confFill.style.width = conf + '%';
+      neighborInfo.textContent = 'Neighbors: ' + (Array.isArray(res.neighbors) ? res.neighbors.length : (res.subgraph ? res.subgraph.nodes.length : '—'));
+      resultCard.style.display = 'flex';
+
+      // Graph rendering: needs res.subgraph (nodes[], edges[]) and new_node_index
+      if(res.subgraph && typeof res.new_node_index !== 'undefined'){
+        renderGraph(res.subgraph, res.new_node_index, res.neighbors || []);
+      } else {
+        graphPanel.style.display='none';
+      }
+
+    }catch(err){
+      console.error(err);
+      alert('Error: ' + (err.message || 'Backend error'));
+    }finally{
+      setLoading(false);
+    }
+  });
+
+  // ---------- Cytoscape rendering ----------
+  let cy = null;
+  function renderGraph(subgraph, newNodeIdx, neighbors){
+    graphPanel.style.display='block';
+    // Build elements
+    const elements = [];
+    const simMap = {};
+    if(Array.isArray(neighbors)){
+      neighbors.forEach(n => { simMap[String(n.idx)] = Number(n.similarity || 0); });
+    }
+    // nodes: expected node = { id: int, label: 0/1, first20: [...] optional }
+    for(const node of subgraph.nodes){
+      const id = String(node.id);
+      const isNew = Number(node.id) === Number(newNodeIdx);
+      const sim = simMap[id] || 0;
+      elements.push({ data: { id:id, label: 'Node ' + id, meta: node, sim: sim }, classes: isNew ? 'new-node' : (node.label==1 ? 'bot' : 'human') });
+    }
+    // edges: expected { source, target, type }
+    for(let i=0;i<subgraph.edges.length;i++){
+      const e = subgraph.edges[i];
+      elements.push({ data: { id:'e'+i, source:String(e.source), target:String(e.target), type:e.type }});
+    }
+
+    // destroy old
+    if(cy){ try{ cy.destroy(); }catch(e){} cy=null; }
+
+    cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: elements,
+      style: [
+        { selector: 'node', style: {
+          'label':'data(label)', 'text-valign':'center','text-halign':'center',
+          'color':'#ffffff','font-size':10,'text-outline-width':2,'text-outline-color':'#21303b',
+          'width': 'mapData(sim, 0, 1, 22, 44)','height':'mapData(sim, 0, 1, 22, 44)',
+          'background-color':'#9aa6b2','transition-property':'width height background-color','transition-duration':'200ms'
+        }},
+        { selector: 'node.bot', style: { 'background-color':'#ff6b6b','text-outline-color':'#a83b3b'} },
+        { selector: 'node.human', style: { 'background-color':'#51cf66','text-outline-color':'#2a7b3a'} },
+        { selector: 'node.new-node', style: { 'background-color':'#f5a623','text-outline-color':'#7a4f06','width':48,'height':48 } },
+        { selector: 'edge', style: { 'width':2,'curve-style':'bezier','line-color':'#dbe7ee','target-arrow-shape':'triangle','target-arrow-color':'#dbe7ee','arrow-scale':0.6,'opacity':0.95 } }
+      ],
+      layout: { name:'cose', idealEdgeLength: 70, nodeOverlap: 10, refresh:20, fit:true },
+      userZoomingEnabled:true, userPanningEnabled:true
+    });
+
+    // color edges by type
+    cy.edges().forEach(edge=>{
+      const t = edge.data('type');
+      const pal = {0:'#b3cde0',1:'#c7e9c0',2:'#f4a582',3:'#92c5de'}; // extend if needed
+      const c = pal[t] || '#dbe7ee';
+      edge.style('line-color', c);
+      edge.style('target-arrow-color', c);
+    });
+
+    // zoom controls
+    document.getElementById('zoomIn').onclick = ()=>cy.zoom({level: cy.zoom()+0.2});
+    document.getElementById('zoomOut').onclick = ()=>cy.zoom({level: cy.zoom()-0.2});
+    document.getElementById('fitBtn').onclick = ()=>cy.fit();
+    document.getElementById('centerBtn').onclick = ()=>cy.center();
+
+    // node click -> show meta in result card description (short)
+    cy.on('tap','node',evt=>{
+      const n = evt.target;
+      const meta = n.data('meta')||{};
+      const sim = Number(n.data('sim'))||0;
+      resultDesc.textContent = (meta.label==1 ? 'Neighbor: BOT' : 'Neighbor: HUMAN') + ' — sim: ' + (sim>0?sim.toFixed(4):'—');
+    });
+
+    // animate entrance
+    cy.nodes().forEach(n=>{
+      n.animate({ style: { 'opacity': 1 } }, { duration: 400 });
+    });
+
+    // fit & center
+    cy.fit(40);
+    cy.center();
+  }
+
+  // set initial focus
+  window.addEventListener('load', ()=>{ const f = document.querySelector('input[name="followers_count"]'); if(f) f.focus(); });
+})();
+</script>
+</body>
+</html>
+<!--  -->
