@@ -1,3 +1,27 @@
 venv
 logs
 Dataset
+7. Step - models_saved/*
+
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore logs
+logs/
+*.log
+
+# Ignore large files
+*.pt
+
+# Ignore environment files
+.env
+*.env
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
