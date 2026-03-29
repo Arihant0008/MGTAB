@@ -1,0 +1,5 @@
+Model,Train Accuracy,Test Accuracy,Bot Recall
+GCN,0.7831,0.7921,0.687
+GAT,0.7954,0.8167,0.8453
+GraphSAGE,0.8814,0.8716,0.8885
+RGCN,0.895,0.8823,0.9029
