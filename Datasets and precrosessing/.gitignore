@@ -20,6 +20,7 @@ logs/
 # Ignore environment files
 .env
 *.env
+../venv/
 
 # Ignore system files
 .DS_Store
