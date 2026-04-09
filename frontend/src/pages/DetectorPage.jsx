@@ -128,9 +128,6 @@ export default function DetectorPage() {
               <span style={{ fontSize: '18px' }}>⚠️</span>
               <div>
                 <strong>Error:</strong> {error}
-                <p className="text-muted" style={{ fontSize: '12px', marginTop: 4 }}>
-                  Make sure the backend is running on http://localhost:8000
-                </p>
               </div>
             </div>
           )}
