@@ -1,20 +1,25 @@
 import { useEffect } from 'react';
 
-const RELATION_TYPES = [
-  { key: 'follower', label: 'Follower', placeholder: 'follower_user' },
-  { key: 'friend', label: 'Friend', placeholder: 'friend_user' },
-  { key: 'mention', label: 'Mention', placeholder: 'mentioned_user' },
-  { key: 'reply', label: 'Reply', placeholder: 'replied_user' },
-  { key: 'quoted', label: 'Quote', placeholder: 'quoted_user' },
-  { key: 'hashtag', label: 'Shared Hashtags', placeholder: 'user_with_same_hashtag' },
-  { key: 'url', label: 'Shared URLs', placeholder: 'user_with_same_url' },
+const EXPLICIT_RELATIONS = [
+  { key: 'follower', label: 'Follower', placeholder: 'follower_user', desc: 'User A follows User B' },
+  { key: 'friend', label: 'Friend', placeholder: 'friend_user', desc: 'User A is followed back by User B' },
+  { key: 'mention', label: 'Mention', placeholder: 'mentioned_user', desc: 'User A mentions User B in a tweet' },
+  { key: 'reply', label: 'Reply', placeholder: 'replied_user', desc: 'User A replies directly to User B' },
+  { key: 'quoted', label: 'Quote', placeholder: 'quoted_user', desc: 'User A quotes a tweet from User B' },
 ];
+
+const IMPLICIT_RELATIONS = [
+  { key: 'hashtag', label: 'Shared Hashtags', placeholder: 'user_with_same_hashtag', desc: 'Two users using the same hashtags, indicating topic alignment' },
+  { key: 'url', label: 'Shared URLs', placeholder: 'user_with_same_url', desc: 'Two users sharing the same links, often used in coordinated campaigns' },
+];
+
+const ALL_RELATIONS = [...EXPLICIT_RELATIONS, ...IMPLICIT_RELATIONS];
 
 export default function RelationsEditor({ relations, onChange }) {
 
   useEffect(() => {
     if (relations.length !== 7) {
-      onChange(RELATION_TYPES.map(rt => ({
+      onChange(ALL_RELATIONS.map(rt => ({
         source: 'target',
         target: '',
         relation: rt.key
@@ -59,25 +64,73 @@ export default function RelationsEditor({ relations, onChange }) {
         </button>
       </div>
 
-      <div className="relations-table">
-        <div className="relations-header" style={{ gridTemplateColumns: 'minmax(120px, 150px) 1fr' }}>
-          <span>Relation Type</span>
-          <span>Target User Identifier</span>
+      {/* ── Explicit Relationships ── */}
+      <div className="relations-group">
+        <div className="relations-group-header">
+          <span className="relations-group-badge explicit">Explicit</span>
+          <span className="relations-group-title">Direct Interactions</span>
         </div>
-        {relations.length === 7 && relations.map((rel, i) => (
-          <div key={i} className="relation-row" style={{ gridTemplateColumns: 'minmax(120px, 150px) 1fr' }}>
-            <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>
-              {RELATION_TYPES[i].label}
-            </span>
-            <input
-              className="form-input"
-              type="text"
-              value={rel.target}
-              onChange={e => updateTarget(i, e.target.value)}
-              placeholder={RELATION_TYPES[i].placeholder}
-            />
+        <p className="relations-group-desc">
+          These are <strong>direct interactions</strong> between users that clearly show how they connect with each other.
+        </p>
+
+        <div className="relations-table">
+          <div className="relations-header" style={{ gridTemplateColumns: 'minmax(100px, 140px) 1fr' }}>
+            <span>Relation Type</span>
+            <span>Target User Identifier</span>
           </div>
-        ))}
+          {relations.length === 7 && EXPLICIT_RELATIONS.map((rt, i) => (
+            <div key={i} className="relation-row" style={{ gridTemplateColumns: 'minmax(100px, 140px) 1fr' }}>
+              <div className="relation-label-group">
+                <span className="relation-label-name">{rt.label}</span>
+                <span className="relation-label-desc">{rt.desc}</span>
+              </div>
+              <input
+                className="form-input"
+                type="text"
+                value={relations[i].target}
+                onChange={e => updateTarget(i, e.target.value)}
+                placeholder={rt.placeholder}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Implicit Relationships ── */}
+      <div className="relations-group" style={{ marginTop: '20px' }}>
+        <div className="relations-group-header">
+          <span className="relations-group-badge implicit">Implicit</span>
+          <span className="relations-group-title">Hidden Connections</span>
+        </div>
+        <p className="relations-group-desc">
+          These are <strong>indirect or hidden connections</strong>, which aren't obvious at first but show shared behavior.
+        </p>
+
+        <div className="relations-table">
+          <div className="relations-header" style={{ gridTemplateColumns: 'minmax(100px, 140px) 1fr' }}>
+            <span>Relation Type</span>
+            <span>Target User Identifier</span>
+          </div>
+          {relations.length === 7 && IMPLICIT_RELATIONS.map((rt, idx) => {
+            const i = idx + 5; // offset by explicit count
+            return (
+              <div key={i} className="relation-row" style={{ gridTemplateColumns: 'minmax(100px, 140px) 1fr' }}>
+                <div className="relation-label-group">
+                  <span className="relation-label-name">{rt.label}</span>
+                  <span className="relation-label-desc">{rt.desc}</span>
+                </div>
+                <input
+                  className="form-input"
+                  type="text"
+                  value={relations[i].target}
+                  onChange={e => updateTarget(i, e.target.value)}
+                  placeholder={rt.placeholder}
+                />
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       <p className="text-muted mt-2" style={{ fontSize: '12px' }}>

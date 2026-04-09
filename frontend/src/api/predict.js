@@ -2,6 +2,9 @@
  * API client for the MGTAB Bot Detector backend.
  */
 
+// For local testing:
+// const API_BASE = 'http://localhost:8000';
+// For production, switch back to:
 const API_BASE = 'https://arihant0008-mgtab-detector-api.hf.space';
 
 export async function predictUser(requestData) {
