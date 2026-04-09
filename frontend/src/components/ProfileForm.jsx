@@ -156,8 +156,8 @@ export default function ProfileForm({ profile, onChange }) {
               className="form-input"
               type="number"
               min="0"
-              value={profile[f.key] || 0}
-              onChange={e => update(f.key, parseInt(e.target.value) || 0)}
+              value={profile[f.key] !== undefined && profile[f.key] !== null ? profile[f.key] : ''}
+              onChange={e => update(f.key, e.target.value === '' ? '' : parseInt(e.target.value, 10))}
             />
           </div>
         ))}

@@ -1,30 +1,44 @@
-const RELATION_OPTIONS = [
-  'follower', 'friend', 'mention', 'reply', 'quoted', 'url', 'hashtag'
+import { useEffect } from 'react';
+
+const RELATION_TYPES = [
+  { key: 'follower', label: 'Follower', placeholder: 'follower_user' },
+  { key: 'friend', label: 'Friend', placeholder: 'friend_user' },
+  { key: 'mention', label: 'Mention', placeholder: 'mentioned_user' },
+  { key: 'reply', label: 'Reply', placeholder: 'replied_user' },
+  { key: 'quoted', label: 'Quote', placeholder: 'quoted_user' },
+  { key: 'hashtag', label: 'Shared Hashtags', placeholder: 'user_with_same_hashtag' },
+  { key: 'url', label: 'Shared URLs', placeholder: 'user_with_same_url' },
 ];
 
 export default function RelationsEditor({ relations, onChange }) {
 
-  const addRelation = () => {
-    onChange([...relations, { source: 'target', target: '', relation: 'follower' }]);
-  };
+  useEffect(() => {
+    if (relations.length !== 7) {
+      onChange(RELATION_TYPES.map(rt => ({
+        source: 'target',
+        target: '',
+        relation: rt.key
+      })));
+    }
+  }, []);
 
-  const updateRelation = (index, key, value) => {
+  const updateTarget = (index, value) => {
     const updated = [...relations];
-    updated[index] = { ...updated[index], [key]: value };
+    updated[index] = { ...updated[index], target: value };
     onChange(updated);
   };
 
-  const removeRelation = (index) => {
-    onChange(relations.filter((_, i) => i !== index));
-  };
-
   const loadDemoRelations = () => {
-    onChange([
-      { source: 'target', target: 'user_alice', relation: 'friend' },
-      { source: 'user_alice', target: 'target', relation: 'follower' },
-      { source: 'target', target: 'user_bob', relation: 'mention' },
-      { source: 'target', target: 'user_carol', relation: 'reply' },
-    ]);
+    const demo = [
+      { source: 'target', target: 'user_alice', relation: 'follower' },
+      { source: 'target', target: 'user_bob', relation: 'friend' },
+      { source: 'target', target: 'user_carol', relation: 'mention' },
+      { source: 'target', target: 'user_dave', relation: 'reply' },
+      { source: 'target', target: 'user_eve', relation: 'quoted' },
+      { source: 'target', target: 'user_frank', relation: 'hashtag' },
+      { source: 'target', target: 'user_grace', relation: 'url' }
+    ];
+    onChange(demo);
   };
 
   return (
@@ -32,9 +46,9 @@ export default function RelationsEditor({ relations, onChange }) {
       <div className="section-header">
         <div className="section-icon">🔗</div>
         <div>
-          <div className="section-title">Relations <span className="badge badge-human" style={{ fontSize: '11px', marginLeft: 8 }}>Optional</span></div>
+          <div className="section-title">Relations <span className="badge badge-human" style={{ fontSize: '11px', marginLeft: 8 }}>Mandatory</span></div>
           <div className="section-subtitle">
-            Define graph edges — more relations = better accuracy
+            Provide the 7 required explicit and implicit graph edges
           </div>
         </div>
       </div>
@@ -45,67 +59,29 @@ export default function RelationsEditor({ relations, onChange }) {
         </button>
       </div>
 
-      {relations.length === 0 && (
-        <div className="tweet-empty glass-card" onClick={addRelation}>
-          <span style={{ fontSize: '24px' }}>🔗</span>
-          <span className="text-muted">No relations. The model will still work using features only.</span>
+      <div className="relations-table">
+        <div className="relations-header" style={{ gridTemplateColumns: 'minmax(120px, 150px) 1fr' }}>
+          <span>Relation Type</span>
+          <span>Target User Identifier</span>
         </div>
-      )}
-
-      {relations.length > 0 && (
-        <div className="relations-table">
-          <div className="relations-header">
-            <span>Source</span>
-            <span>Relation</span>
-            <span>Target</span>
-            <span></span>
+        {relations.length === 7 && relations.map((rel, i) => (
+          <div key={i} className="relation-row" style={{ gridTemplateColumns: 'minmax(120px, 150px) 1fr' }}>
+            <span style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-primary)' }}>
+              {RELATION_TYPES[i].label}
+            </span>
+            <input
+              className="form-input"
+              type="text"
+              value={rel.target}
+              onChange={e => updateTarget(i, e.target.value)}
+              placeholder={RELATION_TYPES[i].placeholder}
+            />
           </div>
-          {relations.map((rel, i) => (
-            <div key={i} className="relation-row">
-              <input
-                className="form-input"
-                type="text"
-                value={rel.source}
-                onChange={e => updateRelation(i, 'source', e.target.value)}
-                placeholder="source_user"
-              />
-              <select
-                className="form-input"
-                value={rel.relation}
-                onChange={e => updateRelation(i, 'relation', e.target.value)}
-              >
-                {RELATION_OPTIONS.map(r => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-              <input
-                className="form-input"
-                type="text"
-                value={rel.target}
-                onChange={e => updateRelation(i, 'target', e.target.value)}
-                placeholder="target_user"
-              />
-              <button
-                type="button"
-                className="btn btn-sm btn-danger"
-                onClick={() => removeRelation(i)}
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+        ))}
+      </div>
 
-      {relations.length > 0 && (
-        <button type="button" className="btn btn-sm btn-secondary mt-2" onClick={addRelation}>
-          + Add Relation
-        </button>
-      )}
-
-      <p className="text-muted mt-1" style={{ fontSize: '12px' }}>
-        <strong>Tip:</strong> Use "target" as the source or target to refer to the account being analyzed.
-        Relation types: follower, friend, mention, reply, quoted, url, hashtag.
+      <p className="text-muted mt-2" style={{ fontSize: '12px' }}>
+        <strong>Tip:</strong> Provide the target username or identifier for each of the 7 relationship types. If a relation is absent, leave it blank.
       </p>
     </div>
   );
