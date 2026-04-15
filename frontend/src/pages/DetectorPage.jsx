@@ -43,13 +43,22 @@ export default function DetectorPage() {
     setResult(null);
 
     try {
+      // Filter relations: only keep those where the neighbor side is filled in.
+      // For follower: source is the neighbor. For others: target is the neighbor.
+      const validRelations = relations.filter(r => {
+        const targetAliases = ['target', '__target__', 'this_user', 'self'];
+        const srcIsTarget = targetAliases.includes((r.source || '').toLowerCase());
+        const neighborId = srcIsTarget ? r.target : r.source;
+        return neighborId && neighborId.trim() !== '';
+      });
+
       const requestBody = {
         target: {
           profile,
           tweets: tweets.filter(t => t.trim()),
         },
         neighbors: [],
-        relations,
+        relations: validRelations,
       };
 
       const response = await predictUser(requestBody);

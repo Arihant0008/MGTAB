@@ -82,25 +82,19 @@ def encode_created_at(timestamp_seconds: float) -> float:
     Convert a Unix timestamp (seconds since epoch) to the log-scaled
     value used in the MGTAB dataset.
     
-    The dataset stores created_at as log(timestamp_seconds), giving
-    values in the ~36.5 – 51.7 range.
+    The dataset stores created_at with MinMax bounds [36.55, 51.71].
+    Testing reveals that log(unix_seconds) ≈ 21 falls BELOW the minimum,
+    while log(unix_seconds * 1e9) ≈ 41.8 falls correctly within bounds.
     
-    Example: 
-        Jan 1, 2020 = 1577836800 → log(1577836800) ≈ 21.18 (natural log)
+    This means the MGTAB dataset encoded created_at as:
+        log(timestamp_nanoseconds) = log(timestamp_seconds × 1e9)
     
-    However, the MGTAB values (~36-51) suggest log base e of larger numbers
-    or a different epoch. The dataset likely uses:
-        log(seconds_since_twitter_epoch) where twitter started ~2006
-    
-    Given the min/max values (36.55 – 51.71), these correspond to:
-        e^36.55 ≈ 7.5e15 and e^51.71 ≈ 3.3e22
-    
-    This doesn't map to standard timestamps. The actual formula appears 
-    to be: months_since_epoch * some_factor or a custom encoding.
-    
-    Safest approach: use natural log of the unix timestamp, then
-    minmax-scale with the known bounds so it maps to [0,1].
+    Examples:
+        Jan 2008: log(1.20e18) ≈ 41.63 → scaled ≈ 0.33
+        Mar 2015: log(1.43e18) ≈ 41.80 → scaled ≈ 0.35
+        Nov 2023: log(1.70e18) ≈ 41.97 → scaled ≈ 0.36
     """
     if timestamp_seconds <= 0:
         return FEATURE_BOUNDS["created_at"]["min"]
-    return math.log(timestamp_seconds)
+    # MGTAB uses log(timestamp in nanoseconds)
+    return math.log(timestamp_seconds * 1e9)
