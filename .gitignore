@@ -60,3 +60,4 @@ logs/
 # ── Misc ──────────────────────────────────────────
 *.local
 .ipynb_checkpoints/
+backend/hf_deploy/

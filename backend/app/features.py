@@ -188,13 +188,17 @@ def compute_labse_embedding(tweets: list[str]) -> np.ndarray:
         outputs = model(**encoded)
         # LaBSE uses the [CLS] token embedding (pooler_output)
         embeddings = outputs.pooler_output  # (num_tweets, 768)
-        # Normalize embeddings (LaBSE default)
-        embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+        # NOTE: Do NOT L2-normalize here. The MGTAB training data used raw
+        # pooler_output (norms ~18.2). Normalizing shrinks norms to ~0.5,
+        # making the 768 tweet dims invisible to the trained RGCN weights.
     
-    # Average across all tweets
-    avg_embedding = embeddings.mean(dim=0).numpy().astype(np.float32)
+    # Sum across all tweets (NOT average).
+    # The MGTAB training data used summed LaBSE pooler_output per node,
+    # producing norms ~18-20. Averaging would give norms ~5-6, which
+    # the trained RGCN weights would underweight relative to profile features.
+    summed_embedding = embeddings.sum(dim=0).numpy().astype(np.float32)
 
-    return avg_embedding
+    return summed_embedding
 
 
 def build_node_feature(

@@ -2,22 +2,36 @@
 FastAPI application — MGTAB Bot Detector API.
 
 Endpoints:
-    POST /predict/user   — Classify a Twitter/X account
-    GET  /model/info     — Model metadata
-    GET  /health         — Health check
-    GET  /features/schema — Feature definitions for frontend
+    POST /predict/user          — Classify via manual data (backward compat)
+    GET  /predict/username/{h}  — One-click SSE classify via Scweet scraping
+    GET  /model/info            — Model metadata
+    GET  /health                — Health check
+    GET  /features/schema       — Feature definitions for frontend
 """
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import CORS_ORIGINS, RELATION_MAP, NUM_FEATURES, HIDDEN_DIM, NUM_CLASSES, NUM_RELATIONS
 from .inference import InferenceEngine
+from .scraper import (
+    ScraperAuthError,
+    ScraperError,
+    ScraperRateLimitError,
+    ScraperUserNotFoundError,
+    get_scraper,
+)
+
+# Load .env file for Twitter credentials
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,7 +39,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ── Global inference engine ───────────────────────────────────────────
+# ── Global inference engine ───────────────────────────────────────
 engine: Optional[InferenceEngine] = None
 
 
@@ -36,15 +50,20 @@ async def lifespan(app: FastAPI):
     logger.info("Starting MGTAB Bot Detector API...")
     engine = InferenceEngine()
     logger.info("Inference engine ready.")
+
+    # Pre-warm the scraper (lazy login happens on first request)
+    _ = get_scraper()
+    logger.info("Scweet scraper initialized (auth deferred to first use).")
+
     yield
     logger.info("Shutting down.")
 
 
-# ── App ───────────────────────────────────────────────────────────────
+# ── App ───────────────────────────────────────────────────────────
 app = FastAPI(
     title="MGTAB Bot Detector API",
     description="Classify Twitter/X accounts as bot or human using RGCN on MGTAB features.",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -58,7 +77,7 @@ app.add_middleware(
 
 
 
-# ── Pydantic Models ──────────────────────────────────────────────────
+# ── Pydantic Models ──────────────────────────────────────────────
 
 class ProfileData(BaseModel):
     """Raw profile fields from the frontend."""
@@ -104,7 +123,7 @@ class TargetData(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    """Full prediction request body."""
+    """Full prediction request body (manual mode)."""
     target: TargetData
     neighbors: list[NeighborData] = Field(default_factory=list)
     relations: list[RelationData] = Field(default_factory=list)
@@ -153,7 +172,9 @@ class PredictResponse(BaseModel):
     graph_info: dict
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────
+
+# ── 1. Manual Mode (backward compatible) ─────────────────────────
 
 @app.post("/predict/user", response_model=PredictResponse)
 async def predict_user(request: PredictRequest):
@@ -175,6 +196,121 @@ async def predict_user(request: PredictRequest):
         logger.exception("Prediction failed")
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
+
+# ── 2. One-Click SSE Mode (Scweet-powered) ───────────────────────
+
+@app.get("/predict/username/{handle}")
+async def predict_by_username_sse(handle: str):
+    """
+    One-click bot detection via Server-Sent Events.
+
+    Streams real-time progress updates while scraping the ego-graph,
+    then sends the final RGCN prediction. Uses SSE to prevent cloud
+    platform timeouts (Vercel, HF Spaces) on long-running scrapes.
+
+    Event types:
+      - "progress": {step, status, message}
+      - "scrape_complete": {scrape_meta}
+      - "result": {PredictResponse data}
+      - "error": {message, status_code}
+    """
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
+
+    async def event_stream():
+        """Generator that yields SSE events."""
+        try:
+            scraper = get_scraper()
+
+            # Progress callback that yields SSE events
+            async def on_progress(step: int, status: str, message: str):
+                event = json.dumps({"step": step, "status": status, "message": message})
+                yield f"event: progress\ndata: {event}\n\n"
+
+            # We need a slightly different approach since the progress callback
+            # can't directly yield from inside scrape_ego_graph.
+            # Instead, we collect progress events and use a queue.
+            import asyncio
+            progress_queue: asyncio.Queue = asyncio.Queue()
+
+            async def progress_callback(step: int, status: str, message: str):
+                await progress_queue.put(("progress", {
+                    "step": step, "status": status, "message": message
+                }))
+
+            # Run the scraper in a task
+            scrape_task = asyncio.create_task(
+                scraper.scrape_ego_graph(handle, progress=progress_callback)
+            )
+
+            # Stream progress events as they arrive
+            while not scrape_task.done():
+                try:
+                    event_type, event_data = await asyncio.wait_for(
+                        progress_queue.get(), timeout=0.5
+                    )
+                    yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send a keepalive comment to prevent connection timeout
+                    yield ": keepalive\n\n"
+
+            # Drain any remaining progress events
+            while not progress_queue.empty():
+                event_type, event_data = progress_queue.get_nowait()
+                yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+
+            # Get the scraper result
+            request_data, scrape_meta = scrape_task.result()
+
+            # Send scrape summary
+            yield f"event: scrape_complete\ndata: {json.dumps(scrape_meta)}\n\n"
+
+            # Step 5: Run RGCN inference
+            progress_event = json.dumps({
+                "step": 5, "status": "running_rgcn", "message": "Running RGCN inference..."
+            })
+            yield f"event: progress\ndata: {progress_event}\n\n"
+
+            result = engine.predict_from_request(request_data)
+
+            # Add scrape metadata to graph_info
+            result["graph_info"]["scrape_meta"] = scrape_meta
+
+            # Send final result
+            yield f"event: result\ndata: {json.dumps(result)}\n\n"
+
+            # Signal stream end
+            yield f"event: done\ndata: {json.dumps({'status': 'complete'})}\n\n"
+
+        except ScraperUserNotFoundError as e:
+            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except ScraperRateLimitError as e:
+            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except ScraperAuthError as e:
+            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except ScraperError as e:
+            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except Exception as e:
+            logger.exception("SSE prediction pipeline failed")
+            error_data = json.dumps({"message": f"Unexpected error: {str(e)}", "status_code": 500})
+            yield f"event: error\ndata: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+# ── Metadata & Health ─────────────────────────────────────────────
 
 @app.get("/model/info")
 async def model_info():

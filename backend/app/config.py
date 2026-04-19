@@ -5,6 +5,9 @@ All paths are relative to the backend/ directory.
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()  # Load .env before reading any env vars
 
 # ── Paths ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent          # backend/
@@ -52,6 +55,19 @@ REVERSE_SOURCE_RELATIONS = {"follower"}
 # Relations that are undirected (need edges in both directions)
 # Paper Table 4: URL and hashtag co-occurrence are undirected.
 UNDIRECTED_RELATIONS = {"url", "hashtag"}
+
+# ── Scweet Scraper ────────────────────────────────────────────────
+# Cookie-based auth — no passwords needed.
+# Get auth_token from: x.com → F12 → Application → Cookies → auth_token
+TWITTER_AUTH_TOKEN = os.getenv("TWITTER_AUTH_TOKEN", "")
+
+# Optional proxy for Scweet requests (e.g. "http://user:pass@host:port")
+PROXY_URL = os.getenv("PROXY_URL", "")
+
+MAX_NEIGHBORS_PER_RELATION = 10  # 10 × 5 relation types = ~50 neighbors max
+SCRAPE_DELAY_SECONDS = float(os.getenv("SCRAPE_DELAY_SECONDS", "3.0"))
+MAX_TWEETS_TARGET = 20           # tweets to fetch for the target user
+MAX_TWEETS_NEIGHBOR = 5          # tweets to fetch for each neighbor
 
 # ── Server ────────────────────────────────────────────────────────────
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
