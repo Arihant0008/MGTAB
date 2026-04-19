@@ -1,4 +1,4 @@
-<![CDATA[<div align="center">
+<div align="center">
 
 # 🛡️ MGTAB Bot Detector
 
@@ -65,19 +65,8 @@ Standard GCN/GAT/GraphSAGE treat all edges uniformly. RGCN maintains **separate 
 
 > **Frontend (Vercel):** Deployed as a static SPA on Vercel's edge CDN  
 > **Backend (Hugging Face Spaces):** Containerized FastAPI on `arihant0008-mgtab-detector-api.hf.space`
-
-<!-- Replace these placeholders with actual screenshots -->
-```
-📸 Screenshots should be placed in a /docs/screenshots/ directory:
-
-screenshots/hero.png          — Landing page with animated hero section and model stats
-screenshots/detector.png      — Bot Detector page with profile form, tweet input, and relations editor
-screenshots/result_bot.png    — Result card showing bot detection with probability bars
-screenshots/result_human.png  — Result card showing human classification
-screenshots/analytics.png     — Analytics dashboard with model comparison and feature importance
-```
-
 ---
+
 
 ## 🏗️ Architecture & System Design
 
@@ -703,3 +692,8 @@ Built as a Final Year Project implementing the MGTAB research benchmark as a pro
   <sub>Built with 🧠 Graph Neural Networks and ☕ determination</sub>
 </div>
 ]]>
+    Val -- "7 typed edges" --> GraphBuilder
+
+    GraphBuilder -- "PyG Data(x, edge_index, edge_type)" --> RGCN
+    RGCN --> Softmax
+    Softmax -- "JSON response" --> User
