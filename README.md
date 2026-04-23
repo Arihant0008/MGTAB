@@ -13,7 +13,7 @@
 
 **Detect sophisticated Twitter/X bots using graph neural networks — not just metadata.**
 
-[Live Demo](https://arihant0008-mgtab-bot-detector-main.hf.space) · [Paper Reference](https://arxiv.org/abs/2301.12174) · [Report Bug](https://github.com/Arihant0008/MGTAB/issues)
+[Live Demo](https://www.mgtab.me/) · [Paper Reference](https://arxiv.org/abs/2301.12174) · [Report Bug](https://github.com/Arihant0008/MGTAB/issues)
 
 </div>
 
