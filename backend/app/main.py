@@ -1,6 +1,5 @@
 """
 FastAPI application — MGTAB Bot Detector API.
-
 Endpoints:
     POST /predict/user          — Classify via manual data (backward compat)
     GET  /predict/username/{h}  — One-click SSE classify via Scweet scraping
@@ -203,11 +202,9 @@ async def predict_user(request: PredictRequest):
 async def predict_by_username_sse(handle: str):
     """
     One-click bot detection via Server-Sent Events.
-
     Streams real-time progress updates while scraping the ego-graph,
     then sends the final RGCN prediction. Uses SSE to prevent cloud
     platform timeouts (Vercel, HF Spaces) on long-running scrapes.
-
     Event types:
       - "progress": {step, status, message}
       - "scrape_complete": {scrape_meta}
