@@ -1,9 +1,7 @@
 """
 Feature normalization constants and functions.
-
 The min/max values are taken directly from the official MGTAB repository:
 https://github.com/GraphDetec/MGTAB/tree/main/Standardization
-
 Normalization pipeline (matching the paper):
  1. Numerical counts → log(1 + x)           [except lengths & created_at]
  2. MinMaxScaler using the bounds below
