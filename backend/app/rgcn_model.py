@@ -1,7 +1,6 @@
 """
 RGCN model definition — must exactly match the architecture used
 to train best_rgcn.pt.
-
 Architecture:
     RGCNConv(788 → 256, num_relations=7)
     → ReLU → Dropout(0.5)
