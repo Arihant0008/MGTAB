@@ -1,15 +1,12 @@
 """
 Scweet-based Twitter/X scraper for the MGTAB Bot Detector.
-
 Provides automated scraping of:
   - Target user profile metadata + recent tweets
   - Ego-graph expansion: followers, friends, mentions, replies, quotes
   - Neighbor enrichment: real profile + tweet data for each neighbor
   - Opportunistic URL/hashtag co-occurrence edge discovery
-
 Uses Scweet v5 with cookie-based auth_token authentication (no passwords).
 All async methods use Scweet's aget_* variants for FastAPI compatibility.
-
 Rate-Limit Resilience:
   All tweet-fetching calls are wrapped in explicit RateLimitError / HTTP 429
   handlers. If a neighbor's tweets are rate-limited, the node still enters the
@@ -79,13 +76,11 @@ def scweet_user_to_profile(user_data: dict) -> dict:
     """
     Map a Scweet v5 user-info dict to the exact 20-feature profile dict
     expected by our features.py pipeline.
-
     Scweet v5 user record fields (from DOCUMENTATION.md):
         user_id, username, name, description, location, created_at,
         followers_count, following_count, statuses_count, favourites_count,
         media_count, listed_count, verified, blue_verified, protected,
         profile_image_url, profile_banner_url, url
-
     Handles the Scweet → MGTAB field name mapping and injects
     dataset-mode defaults for 6 legacy fields not exposed by the
     modern Twitter/X internal API.
@@ -148,7 +143,6 @@ def scweet_user_to_profile(user_data: dict) -> dict:
 
 def _extract_tweet_texts(tweets: list) -> list[str]:
     """Extract text from a list of Scweet tweet dicts.
-
     Scweet v5 tweet record has: tweet_id, timestamp, user, text,
     likes, retweets, comments, tweet_url, media, embedded_text, raw
     """
@@ -165,7 +159,6 @@ def _extract_tweet_texts(tweets: list) -> list[str]:
 
 def _extract_urls_from_tweets(tweets: list) -> set[str]:
     """Extract all URLs from tweet dicts for co-occurrence matching.
-
     Uses the raw GraphQL payload when available for structured URL entities,
     with a regex fallback on the tweet text.
     """
@@ -197,7 +190,6 @@ def _extract_urls_from_tweets(tweets: list) -> set[str]:
 
 def _extract_hashtags_from_tweets(tweets: list) -> set[str]:
     """Extract all hashtags from tweet dicts for co-occurrence matching.
-
     Uses the raw GraphQL payload when available, with regex fallback.
     """
     hashtags = set()
@@ -243,7 +235,6 @@ def _extract_mentions_from_tweets(tweets: list) -> set[str]:
 
 def _extract_reply_usernames(tweets: list) -> set[str]:
     """Extract usernames this user replied to from tweet dicts.
-
     Scweet v5 tweet records include a 'raw' field containing the full
     GraphQL payload, which has legacy.in_reply_to_screen_name.
     """
@@ -276,7 +267,6 @@ def _extract_reply_usernames(tweets: list) -> set[str]:
 
 def _extract_quoted_usernames(tweets: list) -> set[str]:
     """Extract usernames of users who were quoted.
-
     Scweet v5 provides an 'embedded_text' field for quoted/retweeted tweets,
     and the raw payload often contains quoted_status_permalink or similar.
     """
@@ -308,7 +298,6 @@ def _extract_quoted_usernames(tweets: list) -> set[str]:
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Check if an exception is a rate-limit / HTTP 429 error.
-
     Checks the Scweet exception hierarchy first, then falls back to
     pattern-matching on the exception message for resilience against
     library version changes.
@@ -346,11 +335,9 @@ class ScweetScraper:
         """
         Lazily initialize the Scweet client.
         Uses auth_token extracted from browser cookies.
-
         Proxy configuration: if PROXY_URL is set, the ScweetConfig is
         initialized with proxies={"http": PROXY_URL, "https": PROXY_URL}
         so all Scweet HTTP requests are tunnelled through the proxy.
-
         Runs Scweet init in a thread to avoid blocking the event loop
         (Scweet provisions accounts into SQLite on first init).
         """
@@ -415,7 +402,6 @@ class ScweetScraper:
 
     async def _safe_delay(self) -> None:
         """Sleep between API calls to respect rate limits.
-
         Uses the SCRAPE_DELAY_SECONDS env var (default 3.0s).
         """
         await asyncio.sleep(SCRAPE_DELAY_SECONDS)
@@ -474,7 +460,6 @@ class ScweetScraper:
 
     async def scrape_user_profile(self, username: str) -> dict:
         """Fetch user profile info by screen name.
-
         Uses Scweet's aget_user_info([username]) which returns a list
         of user record dicts.
         """
@@ -493,10 +478,8 @@ class ScweetScraper:
 
     async def scrape_user_tweets(self, username: str, count: int = 20) -> list:
         """Fetch recent tweets for a username.
-
         Uses Scweet's aget_profile_tweets([username], limit=count).
         Returns a list of tweet record dicts.
-
         RATE-LIMIT RESILIENT: If a RateLimitError or HTTP 429 is caught,
         logs a warning and returns an empty list instead of crashing.
         This ensures the node still enters the graph with profile features
@@ -519,7 +502,6 @@ class ScweetScraper:
 
     async def scrape_followers(self, username: str, count: int = 10) -> list:
         """Fetch followers for a username.
-
         Uses Scweet's aget_followers([username], limit=count).
         Returns list of user record dicts.
         """
@@ -533,7 +515,6 @@ class ScweetScraper:
 
     async def scrape_following(self, username: str, count: int = 10) -> list:
         """Fetch following for a username.
-
         Uses Scweet's aget_following([username], limit=count).
         Returns list of user record dicts.
         """
@@ -554,30 +535,25 @@ class ScweetScraper:
     ) -> dict:
         """
         Full ego-graph scrape pipeline.
-
         1. Authenticate + scrape target user profile + 20 recent tweets
         2. Discover neighbors via 5 relation types (up to 10 each)
         3. Fetch real profile + 5 tweets for each unique neighbor
         4. Build relation edges (including URL/hashtag co-occurrence)
         Step 5 (RGCN inference) is handled by main.py's SSE endpoint.
-
         SSE Progress Steps (must match React stepper UI):
             step 1 → "scraping_profile"   ("Authenticating")
             step 2 → "fetching_network"   ("Fetching Network")
             step 3 → "enriching_neighbors" ("Enriching Neighbors")
             step 4 → "building_graph"     ("Building Graph")
             step 5 → (emitted by main.py) ("Running RGCN")
-
         Rate-Limit Resilience:
             Tweet fetching for both the target and each neighbor is wrapped
             in try-except blocks that catch RateLimitError / HTTP 429.
             If rate-limited, the node enters the graph with profile features
             and an empty tweet list, rather than crashing the pipeline.
-
         Args:
             username: Twitter handle (with or without @)
             progress: async callback for SSE progress streaming
-
         Returns:
             tuple of (request_data dict, scrape_meta dict)
         """
