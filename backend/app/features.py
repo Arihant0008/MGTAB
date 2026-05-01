@@ -1,9 +1,7 @@
 """
 Feature engineering pipeline.
-
 Converts raw profile data + tweets into the exact 788-dimensional
 feature vector that the trained RGCN model expects.
-
 Feature vector layout (matching MGTAB features.pt):
   [0]      profile_use_background_image   (bool)
   [1]      default_profile                (bool)
