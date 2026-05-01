@@ -1,12 +1,10 @@
 """
 Graph builder — constructs a PyTorch Geometric Data object
 from the user's request JSON.
-
 Handles:
  - Target node (always present)
  - Neighbor nodes (optional, zero-vector placeholder if no data provided)
  - Relations/edges mapped to MGTAB relation IDs 0-6
-
 Key design decisions (per MGTAB paper):
  - Edges to neighbors WITHOUT real profile data are SKIPPED. The trained
    RGCN learned with all nodes having real 788-dim features; injecting
