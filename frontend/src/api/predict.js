@@ -4,9 +4,9 @@
  */
 
 // For local testing:
-const API_BASE = 'http://localhost:8000';
+// const API_BASE = 'http://localhost:8000';
 // For production:
-// const API_BASE = 'https://arihant0008-mgtab-bot-detector-main.hf.space';
+const API_BASE = 'https://arihant0008-mgtab-bot-detector-main.hf.space';
 
 
 // ── Manual Mode (POST /predict/user) ─────────────────────────────
