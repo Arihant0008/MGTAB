@@ -57,7 +57,7 @@ export default function Footer() {
             </span>
           </div>
           <div className="footer-rights">
-            All rights reserved · B.E. Final Year Project 2025–26
+            All rights reserved · B.Tech. Final Year Project 
           </div>
         </div>
 
