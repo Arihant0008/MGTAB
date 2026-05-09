@@ -38,7 +38,16 @@ from .normalization import (
 
 logger = logging.getLogger(__name__)
 
-# ── Lazy-loaded LaBSE model (using transformers directly) ────────────
+# ── LaBSE model constants ──────────────────────────────────────────────
+# The MGTAB training dataset used the raw LaBSE pooler_output, which has a
+# typical L2-norm of ~18.2 per tweet. We normalize to a fixed reference norm
+# so the magnitude of the tweet feature block is independent of how many
+# tweets Scweet managed to fetch (5 vs 20 vs 0).
+LABSE_EXPECTED_NORM = 18.2   # empirical norm of a single LaBSE pooler_output
+LABSE_REFERENCE_TWEETS = 5  # reference tweet count used to calibrate magnitude
+LABSE_TARGET_NORM = LABSE_EXPECTED_NORM * LABSE_REFERENCE_TWEETS  # ~91.0
+
+# Lazy-loaded model singletons
 _labse_tokenizer = None
 _labse_model = None
 
@@ -151,29 +160,52 @@ def compute_profile_features(profile: dict) -> np.ndarray:
 
 def compute_labse_embedding(tweets: list[str]) -> np.ndarray:
     """
-    Encode a list of tweet texts using LaBSE and average them.
-    Uses transformers AutoModel directly (compatible with PyTorch 2.1).
-    
+    Encode a list of tweet texts using LaBSE and produce a fixed-norm embedding.
+
+    Strategy:
+      1. Mean-pool the LaBSE pooler_output across all tweets (invariant to count)
+      2. L2-normalise the mean vector to unit norm
+      3. Re-scale to LABSE_TARGET_NORM so the magnitude matches what the RGCN
+         was trained on (~5 tweets × 18.2 norm ≈ 91.0)
+
+    This prevents the magnitude of the 768-dim tweet block from varying with
+    the number of tweets Scweet managed to fetch (which changes across runs
+    due to rate-limiting), while still preserving the semantic direction.
+
+    When NO tweets are available (rate-limited / new account), we return a
+    small-magnitude noise vector rather than zeros. A pure zero vector is
+    completely out-of-distribution for the trained RGCN (it was trained on
+    nodes that always had tweet content), and causes erratic aggregation in
+    the graph convolution layers.
+
     Args:
-        tweets: list of tweet text strings.
-    
+        tweets: list of tweet text strings (can be empty)
+
     Returns:
-        np.ndarray of shape (768,) — averaged LaBSE embedding.
+        np.ndarray of shape (768,) with fixed target norm.
     """
-    if not tweets or all(not t.strip() for t in tweets):
-        logger.warning("No tweets provided — returning zero embedding.")
-        return np.zeros(768, dtype=np.float32)
-
-    # Filter out empty tweets
-    valid_tweets = [t.strip() for t in tweets if t.strip()]
-    if not valid_tweets:
-        return np.zeros(768, dtype=np.float32)
-
     import torch
 
+    valid_tweets = [t.strip() for t in (tweets or []) if t.strip()]
+
+    if not valid_tweets:
+        logger.warning(
+            "No tweets available — returning low-magnitude noise vector "
+            "(avoids zero-vector distribution shift in RGCN aggregation)."
+        )
+        # Use a seeded tiny noise vector so the feature is non-zero but neutral.
+        # Magnitude is set to 10% of the target norm to represent low confidence
+        # in the tweet features without corrupting the aggregation with zeros.
+        rng = np.random.default_rng(seed=42)
+        noise = rng.standard_normal(768).astype(np.float32)
+        noise_norm = np.linalg.norm(noise)
+        if noise_norm > 0:
+            noise = noise / noise_norm * (LABSE_TARGET_NORM * 0.10)
+        return noise
+
     tokenizer, model = _get_labse()
-    
-    # Tokenize and encode
+
+    # Encode all valid tweets
     encoded = tokenizer(
         valid_tweets,
         padding=True,
@@ -181,22 +213,36 @@ def compute_labse_embedding(tweets: list[str]) -> np.ndarray:
         max_length=128,
         return_tensors="pt",
     )
-    
+
     with torch.no_grad():
         outputs = model(**encoded)
-        # LaBSE uses the [CLS] token embedding (pooler_output)
+        # Use pooler_output: (num_tweets, 768)
+        # This is the raw CLS-token representation the MGTAB training used.
         embeddings = outputs.pooler_output  # (num_tweets, 768)
-        # NOTE: Do NOT L2-normalize here. The MGTAB training data used raw
-        # pooler_output (norms ~18.2). Normalizing shrinks norms to ~0.5,
-        # making the 768 tweet dims invisible to the trained RGCN weights.
-    
-    # Sum across all tweets (NOT average).
-    # The MGTAB training data used summed LaBSE pooler_output per node,
-    # producing norms ~18-20. Averaging would give norms ~5-6, which
-    # the trained RGCN weights would underweight relative to profile features.
-    summed_embedding = embeddings.sum(dim=0).numpy().astype(np.float32)
 
-    return summed_embedding
+    # Step 1: Mean-pool across tweets → (768,)
+    # Mean is tweet-count invariant; sum would change magnitude with count.
+    mean_embedding = embeddings.mean(dim=0).numpy().astype(np.float32)
+
+    # Step 2: L2-normalise to unit norm
+    emb_norm = np.linalg.norm(mean_embedding)
+    if emb_norm > 1e-8:
+        unit_embedding = mean_embedding / emb_norm
+    else:
+        # Degenerate case: embedding is near-zero, fall back to noise
+        rng = np.random.default_rng(seed=42)
+        unit_embedding = rng.standard_normal(768).astype(np.float32)
+        unit_embedding /= np.linalg.norm(unit_embedding)
+
+    # Step 3: Re-scale to target norm (matches training-time magnitude)
+    scaled_embedding = unit_embedding * LABSE_TARGET_NORM
+
+    logger.debug(
+        f"LaBSE embedding: {len(valid_tweets)} tweets, "
+        f"raw_norm={emb_norm:.2f}, scaled_norm={np.linalg.norm(scaled_embedding):.2f}"
+    )
+
+    return scaled_embedding
 
 
 def build_node_feature(

@@ -19,9 +19,19 @@ export default function ResultCard({ result, loading }) {
   const confidence = Math.round(result.confidence * 100);
   const probBot = Math.round(result.prob_bot * 100);
   const probHuman = Math.round(result.prob_human * 100);
+  const warning = result.quality_warning;
+  const gi = result.graph_info || {};
 
   return (
     <div className={`result-card glass-card animate-slide-up ${isBot ? 'result-bot' : 'result-human'}`}>
+      {/* Quality warning banner */}
+      {warning && (
+        <div className="result-warning-banner">
+          <span className="result-warning-icon">⚠️</span>
+          <span className="result-warning-text">{warning}</span>
+        </div>
+      )}
+
       {/* Main result */}
       <div className="result-main">
         <div className={`result-icon ${isBot ? 'result-icon-bot' : 'result-icon-human'}`}>
@@ -71,11 +81,11 @@ export default function ResultCard({ result, loading }) {
         <div className="result-meta">
           <div className="result-meta-item">
             <span className="result-meta-label">Graph Nodes</span>
-            <span className="result-meta-value">{result.graph_info.num_nodes}</span>
+            <span className="result-meta-value">{gi.num_nodes}</span>
           </div>
           <div className="result-meta-item">
             <span className="result-meta-label">Graph Edges</span>
-            <span className="result-meta-value">{result.graph_info.num_edges}</span>
+            <span className="result-meta-value">{gi.num_edges}</span>
           </div>
           <div className="result-meta-item">
             <span className="result-meta-label">Model</span>
@@ -85,6 +95,19 @@ export default function ResultCard({ result, loading }) {
             <span className="result-meta-label">Features</span>
             <span className="result-meta-value">788-dim</span>
           </div>
+          {gi.nodes_with_tweets !== undefined && (
+            <div className="result-meta-item">
+              <span className="result-meta-label">Tweet Coverage</span>
+              <span
+                className="result-meta-value"
+                style={{
+                  color: gi.nodes_with_tweets < 3 ? 'var(--warning, #f59e0b)' : 'inherit',
+                }}
+              >
+                {gi.nodes_with_tweets}/{gi.num_nodes}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -481,24 +481,36 @@ class ScweetScraper:
         Uses Scweet's aget_profile_tweets([username], limit=count).
         Returns a list of tweet record dicts.
         RATE-LIMIT RESILIENT: If a RateLimitError or HTTP 429 is caught,
-        logs a warning and returns an empty list instead of crashing.
-        This ensures the node still enters the graph with profile features
-        even when the content pillar is starved.
+        retries once after a 5-second back-off. If still rate-limited,
+        returns an empty list instead of crashing. This ensures the node
+        still enters the graph with profile features even when the content
+        pillar is starved.
         """
         await self._ensure_client()
-        try:
-            tweets = await self._client.aget_profile_tweets([username], limit=count)
-            return list(tweets) if tweets else []
-        except Exception as e:
-            if _is_rate_limit_error(e):
-                logger.warning(
-                    f"⚠ Rate-limited fetching tweets for @{username} "
-                    f"(HTTP 429). Returning empty tweet list — node will "
-                    f"enter the graph with profile features only."
-                )
-            else:
-                logger.warning(f"Could not fetch tweets for @{username}: {e}")
-            return []
+        last_exc = None
+        for attempt in range(2):  # up to 2 attempts (1 retry)
+            try:
+                tweets = await self._client.aget_profile_tweets([username], limit=count)
+                return list(tweets) if tweets else []
+            except Exception as e:
+                last_exc = e
+                if _is_rate_limit_error(e):
+                    if attempt == 0:
+                        logger.warning(
+                            f"⚠ Rate-limited fetching tweets for @{username} (attempt {attempt+1}). "
+                            f"Retrying after 5s back-off..."
+                        )
+                        await asyncio.sleep(5.0)
+                    else:
+                        logger.warning(
+                            f"⚠ Rate-limited fetching tweets for @{username} (attempt {attempt+1}). "
+                            f"Giving up — node enters graph with profile features only."
+                        )
+                else:
+                    # Non-rate-limit error — no point retrying
+                    logger.warning(f"Could not fetch tweets for @{username}: {e}")
+                    break
+        return []
 
     async def scrape_followers(self, username: str, count: int = 10) -> list:
         """Fetch followers for a username.
@@ -690,9 +702,9 @@ class ScweetScraper:
                     # Use minimal profile data so the node still enters the graph
                     info["profile_raw"] = {"username": sn}
 
-            # Fetch tweets for this neighbor — RATE-LIMIT RESILIENT
-            # If rate-limited, n_tweets_raw stays [], and the node still
-            # enters the graph with profile-only features.
+            # Fetch tweets for this neighbor — RATE-LIMIT RESILIENT WITH RETRY
+            # If rate-limited after 2 attempts, n_tweets_raw stays [], and the node
+            # still enters the graph with profile-only features (noise vector for tweets).
             n_tweets_raw: list = []
             try:
                 await self._safe_delay()
@@ -700,7 +712,7 @@ class ScweetScraper:
             except Exception as e:
                 if _is_rate_limit_error(e):
                     logger.warning(
-                        f"    ⚠ Rate-limited on tweets for neighbor @{sn}. "
+                        f"    ⚠ Rate-limited on tweets for neighbor @{sn} (after retries). "
                         f"Node enters graph with profile features only."
                     )
                 else:
@@ -783,6 +795,12 @@ class ScweetScraper:
             rt = r["relation"]
             relation_counts[rt] = relation_counts.get(rt, 0) + 1
 
+        # Count how many neighbors actually had tweet data vs profile-only
+        neighbors_with_tweets = sum(
+            1 for nd in neighbors_data if nd.get("tweets")
+        )
+        neighbors_profile_only = len(neighbors_data) - neighbors_with_tweets
+
         scrape_meta = {
             "username": username,
             "display_name": target_profile["name"],
@@ -790,6 +808,8 @@ class ScweetScraper:
             "friends_count": target_profile["friends_count"],
             "tweets_scraped": len(target_tweets),
             "neighbors_found": len(neighbors_data),
+            "neighbors_with_tweets": neighbors_with_tweets,
+            "neighbors_profile_only": neighbors_profile_only,
             "total_relations": len(relations),
             "relation_breakdown": relation_counts,
         }

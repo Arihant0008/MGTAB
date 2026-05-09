@@ -8,5 +8,9 @@ pydantic==2.9.0
 python-multipart>=0.0.9
 python-dotenv>=1.0.0
 
+# Upstash Redis — serverless cache for prediction results
+upstash-redis>=1.1.0
+
+
 # Scweet — Twitter/X scraping via GraphQL (no official API key needed)
 Scweet>=5.0

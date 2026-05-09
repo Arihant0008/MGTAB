@@ -17,6 +17,8 @@ Key design decisions (per MGTAB paper):
      reply:    target → neighbor
      quoted:   target → neighbor
  - URL and hashtag are UNDIRECTED (bidirectional edges).
+ - Returns a quality dict so the inference engine can detect sparse graphs
+   and surface appropriate warnings to the user.
 """
 
 import torch
@@ -28,6 +30,10 @@ from .config import RELATION_MAP, NUM_FEATURES, REVERSE_SOURCE_RELATIONS, UNDIRE
 from .features import build_node_feature
 
 logger = logging.getLogger(__name__)
+
+# Minimum number of neighbors with tweet data to consider the graph "healthy".
+# Below this, the graph quality warning is triggered.
+MIN_TWEET_NEIGHBORS = 3
 
 
 def _has_real_data(neighbor: dict) -> bool:
@@ -53,7 +59,7 @@ def _has_real_data(neighbor: dict) -> bool:
     return False
 
 
-def build_mini_graph(request_data: dict) -> tuple[Data, int]:
+def build_mini_graph(request_data: dict) -> tuple[Data, int, dict]:
     """
     Build a small PyG graph from the prediction request.
     
@@ -64,11 +70,21 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
             - relations: [{source: str, target: str, relation: str}] (optional)
     
     Returns:
-        (data, target_idx): PyG Data object and the index of the target node.
+        (data, target_idx, quality): PyG Data object, index of the target node,
+        and a quality dict with coverage statistics and optional warning.
     """
     # ── 1. Collect neighbor data ─────────────────────────────────────
     neighbors = request_data.get("neighbors", [])
     relations = request_data.get("relations", [])
+
+    # Quality tracking
+    quality: dict = {
+        "nodes_with_tweets": 0,
+        "nodes_profile_only": 0,
+        "nodes_no_data": 0,
+        "edges_filtered": 0,
+        "warning": None,
+    }
 
     # Build a map of neighbor ID → neighbor data (only those with real data)
     neighbor_data_map = {}
@@ -76,9 +92,12 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
         nid = neighbor.get("id", "")
         if nid and _has_real_data(neighbor):
             neighbor_data_map[nid] = neighbor
+        elif nid:
+            quality["nodes_no_data"] += 1
 
     # ── 2. Filter relations: only keep edges where neighbor has real data ─
     valid_relations = []
+    edges_filtered = 0
     for rel in relations:
         rel_type = rel.get("relation", "").lower().strip()
         if rel_type not in RELATION_MAP:
@@ -108,9 +127,10 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
 
         # Only keep edges where the neighbor has real feature data
         if neighbor_id not in neighbor_data_map:
+            edges_filtered += 1
             logger.info(
                 f"Skipping '{rel_type}' edge to '{neighbor_id}': "
-                f"no profile/tweet data provided (zero-vector neighbors corrupt RGCN predictions)."
+                f"no profile/tweet data provided."
             )
             continue
 
@@ -119,6 +139,8 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
             "relation": rel_type,
             "src_is_target": src_is_target,
         })
+
+    quality["edges_filtered"] = edges_filtered
 
     # ── 3. Build node index mapping ──────────────────────────────────
     node_ids = ["__target__"]
@@ -136,7 +158,8 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
     logger.info(
         f"Building mini-graph: {num_nodes} nodes, "
         f"{len(valid_relations)} valid relations "
-        f"(filtered from {len(relations)} total)."
+        f"(filtered {edges_filtered} edges without real data "
+        f"from {len(relations)} total)."
     )
 
     # ── 4. Build node features ───────────────────────────────────────
@@ -149,6 +172,12 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
     target_feature = build_node_feature(target_profile, target_tweets)
     features_list.append(target_feature)
 
+    # Track target tweet coverage
+    if target_tweets and any(t.strip() for t in target_tweets if isinstance(t, str)):
+        quality["nodes_with_tweets"] += 1
+    else:
+        quality["nodes_profile_only"] += 1
+
     # Neighbor nodes (only those with real data)
     for nid in node_ids[1:]:
         n = neighbor_data_map[nid]  # guaranteed to exist from filtering above
@@ -156,6 +185,13 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
         n_tweets = n.get("tweets", [])
         feat = build_node_feature(n_profile, n_tweets)
         features_list.append(feat)
+
+        # Track per-neighbor tweet coverage
+        has_tweets = bool(n_tweets and any(t.strip() for t in n_tweets if isinstance(t, str)))
+        if has_tweets:
+            quality["nodes_with_tweets"] += 1
+        else:
+            quality["nodes_profile_only"] += 1
 
     x = torch.tensor(np.stack(features_list), dtype=torch.float32)
 
@@ -193,28 +229,50 @@ def build_mini_graph(request_data: dict) -> tuple[Data, int]:
 
     if not src_list:
         # No valid edges — create a self-loop so RGCN can still run.
-        # The model's root_weight handles self-connection; the self-loop
-        # with type 0 adds a small additional self-aggregation term.
+        # Use "friend" type (1) for the self-loop — more neutral than "follower" (0).
         logger.info(
             "No valid edges (no neighbors with real data). "
             "Using self-loop → model operates in feature-only mode."
         )
         src_list = [0]
         dst_list = [0]
-        etype_list = [0]
+        etype_list = [1]  # friend type — least biased for self-reference
 
     edge_index = torch.tensor([src_list, dst_list], dtype=torch.long)
     edge_type = torch.tensor(etype_list, dtype=torch.long)
 
-    # ── 6. Assemble PyG Data ─────────────────────────────────────────
+    # ── 6. Compute graph quality warning ────────────────────────────
+    neighbor_nodes = num_nodes - 1  # exclude target node
+    tweet_coverage_pct = (quality["nodes_with_tweets"] / max(num_nodes, 1)) * 100
+
+    if edges_filtered > 0 and neighbor_nodes < MIN_TWEET_NEIGHBORS:
+        quality["warning"] = (
+            f"{edges_filtered} neighbor edge(s) were filtered due to missing data. "
+            f"Only {neighbor_nodes} neighbor(s) entered the graph. "
+            "Tweet coverage may be low due to scraping rate limits. "
+            "Try again for a more reliable result."
+        )
+    elif quality["nodes_profile_only"] > quality["nodes_with_tweets"]:
+        quality["warning"] = (
+            f"Most nodes ({quality['nodes_profile_only']}/{num_nodes}) have profile data "
+            f"only (no tweets). Tweet coverage: {tweet_coverage_pct:.0f}%. "
+            "Results may be less accurate."
+        )
+
+    logger.info(
+        f"Mini-graph built: {num_nodes} nodes, {len(src_list)} edges "
+        f"(types: {sorted(set(etype_list))}). "
+        f"Tweet coverage: {quality['nodes_with_tweets']}/{num_nodes} nodes "
+        f"({tweet_coverage_pct:.0f}%). "
+        f"Profile-only: {quality['nodes_profile_only']}. "
+        f"No-data (filtered): {quality['nodes_no_data']}."
+    )
+
+    # ── 7. Assemble PyG Data ─────────────────────────────────────────
     data = Data(
         x=x,
         edge_index=edge_index,
         edge_type=edge_type,
     )
 
-    logger.info(
-        f"Mini-graph built: {data.num_nodes} nodes, {data.num_edges} edges "
-        f"(types: {sorted(set(etype_list))})"
-    )
-    return data, target_idx
+    return data, target_idx, quality

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 
 from .config import CORS_ORIGINS, RELATION_MAP, NUM_FEATURES, HIDDEN_DIM, NUM_CLASSES, NUM_RELATIONS
 from .inference import InferenceEngine
+from .cache import cache_get, cache_set, cache_delete, cache_ping
 from .scraper import (
     ScraperAuthError,
     ScraperError,
@@ -169,6 +170,7 @@ class PredictResponse(BaseModel):
     prob_bot: float
     confidence: float
     graph_info: dict
+    quality_warning: Optional[str] = None  # Set when graph coverage is low
 
 
 # ── Endpoints ─────────────────────────────────────────────────────
@@ -199,7 +201,7 @@ async def predict_user(request: PredictRequest):
 # ── 2. One-Click SSE Mode (Scweet-powered) ───────────────────────
 
 @app.get("/predict/username/{handle}")
-async def predict_by_username_sse(handle: str):
+async def predict_by_username_sse(handle: str, refresh: bool = False):
     """
     One-click bot detection via Server-Sent Events.
     Streams real-time progress updates while scraping the ego-graph,
@@ -215,8 +217,20 @@ async def predict_by_username_sse(handle: str):
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     async def event_stream():
-        """Generator that yields SSE events."""
         try:
+            clean_handle = handle.strip().lstrip("@").lower()
+
+            # ── Redis Cache Check ─────────────────────────────────────────
+            if not refresh:
+                cached = cache_get(clean_handle)
+                if cached is not None:
+                    yield f"event: cache_hit\ndata: {json.dumps(cached)}\n\n"
+                    yield f"event: done\ndata: {json.dumps({'status': 'complete', 'from_cache': True})}\n\n"
+                    return
+            else:
+                cache_delete(clean_handle)
+                yield f"event: progress\ndata: {json.dumps({'step': 0, 'status': 'cache_cleared', 'message': 'Cache cleared. Running fresh analysis...'})}\n\n"
+
             scraper = get_scraper()
 
             # Progress callback that yields SSE events
@@ -273,8 +287,16 @@ async def predict_by_username_sse(handle: str):
             # Add scrape metadata to graph_info
             result["graph_info"]["scrape_meta"] = scrape_meta
 
+            # Remove the high-follower calibration warning from the frontend result
+            # (it's a technical note, not useful to end users — still logged server-side)
+            if result.get("quality_warning") and "followers" in result["quality_warning"]:
+                result["quality_warning"] = None
+
             # Send final result
             yield f"event: result\ndata: {json.dumps(result)}\n\n"
+
+            # Store in Redis cache so the next search for this handle is instant
+            cache_set(clean_handle, result)
 
             # Signal stream end
             yield f"event: done\ndata: {json.dumps({'status': 'complete'})}\n\n"
