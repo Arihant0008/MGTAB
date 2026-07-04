@@ -1,27 +1,42 @@
 """
 FastAPI application — MGTAB Bot Detector API.
+Queue-driven architecture with SQLite persistence and UID-based rate limiting.
+
 Endpoints:
-    POST /predict/user          — Classify via manual data (backward compat)
-    GET  /predict/username/{h}  — One-click SSE classify via Scweet scraping
-    GET  /model/info            — Model metadata
-    GET  /health                — Health check
-    GET  /features/schema       — Feature definitions for frontend
+    POST /api/v1/predict            — Submit a scrape job (rate limited, returns 202)
+    GET  /api/v1/jobs/{job_id}      — Poll job status and results
+    POST /predict/user              — Manual mode (synchronous, backward compat)
+    GET  /model/info                — Model metadata
+    GET  /health                    — Health check
+    GET  /features/schema           — Feature definitions for frontend
 """
 
+import asyncio
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+
+import firebase_admin
+from firebase_admin import credentials as fb_credentials
 
 from .config import CORS_ORIGINS, RELATION_MAP, NUM_FEATURES, HIDDEN_DIM, NUM_CLASSES, NUM_RELATIONS
 from .inference import InferenceEngine
-from .cache import cache_get, cache_set, cache_delete, cache_ping
+from .cache import cache_get, cache_set, cache_delete
+from .database import init_db, check_rate_limit, create_job, update_job, get_job
+from .security import (
+    SecurityHeadersMiddleware,
+    PredictJobRequest,
+    get_current_uid,
+    verify_bearer_token,
+)
 from .scraper import (
     ScraperAuthError,
     ScraperError,
@@ -45,9 +60,30 @@ engine: Optional[InferenceEngine] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the model on startup, clean up on shutdown."""
+    """Load the model on startup, initialize Firebase Admin & SQLite, clean up on shutdown."""
     global engine
     logger.info("Starting MGTAB Bot Detector API...")
+
+    # ── Firebase Admin Initialization ──────────────────────────────
+    sa_json = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+    if sa_json:
+        try:
+            sa_dict = json.loads(sa_json)
+            cred = fb_credentials.Certificate(sa_dict)
+            firebase_admin.initialize_app(cred)
+            logger.info("Firebase Admin SDK initialized from FIREBASE_SERVICE_ACCOUNT.")
+        except Exception as e:
+            logger.warning(f"Firebase Admin init failed: {e}. Auth verification disabled.")
+    else:
+        logger.warning(
+            "FIREBASE_SERVICE_ACCOUNT not set — auth verification disabled. "
+            "Set this secret in your Hugging Face Space settings."
+        )
+
+    # ── SQLite Initialization (with boot-up recovery sweeper) ─────
+    init_db()
+
+    # ── Inference Engine ──────────────────────────────────────────
     engine = InferenceEngine()
     logger.info("Inference engine ready.")
 
@@ -63,18 +99,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MGTAB Bot Detector API",
     description="Classify Twitter/X accounts as bot or human using RGCN on MGTAB features.",
-    version="2.0.0",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
+# ── Security Headers Middleware ───────────────────────────────────
+app.add_middleware(SecurityHeadersMiddleware)
+
+# ── CORS — dynamic production origin + local dev origins ─────────
+_cors_origins = list(CORS_ORIGINS)  # from config.py (localhost dev ports)
+_production_origin = os.getenv("CORS_PRODUCTION_ORIGIN", "")
+if _production_origin:
+    _cors_origins.append(_production_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins if _cors_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "Authorization"],
 )
-
 
 
 # ── Pydantic Models ──────────────────────────────────────────────
@@ -173,12 +217,199 @@ class PredictResponse(BaseModel):
     quality_warning: Optional[str] = None  # Set when graph coverage is low
 
 
-# ── Endpoints ─────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+#  QUEUE-DRIVEN ENDPOINTS (v3)
+# ══════════════════════════════════════════════════════════════════
 
-# ── 1. Manual Mode (backward compatible) ─────────────────────────
+# ── Background Task Runner ────────────────────────────────────────
+
+def run_scrape_job(job_id: str, handle: str, refresh: bool):
+    """
+    Background task that runs the full scrape → inference pipeline.
+    Updates job status in SQLite throughout execution.
+    Wrapped in try/except to guarantee no deadlocked jobs.
+    """
+    try:
+        update_job(job_id, status="processing")
+
+        # ── Cache Check ───────────────────────────────────────────
+        if not refresh:
+            cached = cache_get(handle)
+            if cached is not None:
+                update_job(
+                    job_id,
+                    status="completed",
+                    result=json.dumps(cached),
+                    progress=json.dumps({
+                        "step": 5, "status_key": "complete", "message": "Retrieved from cache"
+                    }),
+                )
+                return
+        else:
+            cache_delete(handle)
+
+        # ── Scrape Ego-Graph ──────────────────────────────────────
+        scraper = get_scraper()
+
+        # Synchronous progress callback that writes to SQLite
+        def sync_progress(step: int, status_key: str, message: str):
+            update_job(
+                job_id,
+                progress=json.dumps({
+                    "step": step, "status_key": status_key, "message": message
+                }),
+            )
+
+        # Create a new event loop for this thread (BackgroundTasks runs in threadpool)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            # Wrap async scraper with sync progress bridge
+            async def run_scraper():
+                async def async_progress(step, status_key, message):
+                    sync_progress(step, status_key, message)
+                return await scraper.scrape_ego_graph(handle, progress=async_progress)
+
+            request_data, scrape_meta = loop.run_until_complete(run_scraper())
+        finally:
+            loop.close()
+
+        # ── Run RGCN Inference ────────────────────────────────────
+        sync_progress(5, "running_rgcn", "Running RGCN inference...")
+
+        result = engine.predict_from_request(request_data)
+        result["graph_info"]["scrape_meta"] = scrape_meta
+
+        # Remove high-follower calibration warning (technical, not user-facing)
+        if result.get("quality_warning") and "followers" in result["quality_warning"]:
+            result["quality_warning"] = None
+
+        # ── Cache Result ──────────────────────────────────────────
+        cache_set(handle, result)
+
+        # ── Mark Complete ─────────────────────────────────────────
+        update_job(
+            job_id,
+            status="completed",
+            result=json.dumps(result),
+            progress=json.dumps({
+                "step": 5, "status_key": "complete", "message": "Analysis complete"
+            }),
+        )
+        logger.info(f"Job {job_id} completed: {handle} → {result['label_pred']}")
+
+    except ScraperUserNotFoundError as e:
+        update_job(job_id, status="failed", error=f"User not found: {e}")
+        logger.warning(f"Job {job_id} failed (user not found): {handle}")
+    except ScraperRateLimitError as e:
+        update_job(job_id, status="failed", error=f"Twitter rate limit hit: {e}")
+        logger.warning(f"Job {job_id} failed (rate limit): {handle}")
+    except ScraperAuthError as e:
+        update_job(job_id, status="failed", error=f"Twitter authentication error: {e}")
+        logger.warning(f"Job {job_id} failed (auth): {handle}")
+    except ScraperError as e:
+        update_job(job_id, status="failed", error=f"Scraping error: {e}")
+        logger.warning(f"Job {job_id} failed (scraper): {handle}")
+    except Exception as e:
+        update_job(job_id, status="failed", error=f"Unexpected error: {str(e)}")
+        logger.exception(f"Job {job_id} failed unexpectedly: {handle}")
+
+
+# ── 1. Submit Prediction Job ─────────────────────────────────────
+
+@app.post("/api/v1/predict", status_code=202)
+async def submit_prediction(
+    body: PredictJobRequest,
+    background_tasks: BackgroundTasks,
+    uid: str = Depends(get_current_uid),
+):
+    """
+    Submit a new bot detection job. Returns 202 Accepted with job_id.
+
+    Flow:
+    1. Validate input (PredictJobRequest — 15-char alphanumeric regex)
+    2. Extract Firebase UID from Bearer token
+    3. Check 24-hour rate limit → 429 if within cooldown
+    4. Check Redis cache → instant completion if cached
+    5. Create job record → enqueue background task
+    6. Return job_id for polling
+    """
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet.")
+
+    # Rate limit check (raises 429 if within 24h window)
+    check_rate_limit(uid)
+
+    handle = body.target_handle.strip().lower()
+
+    # Check cache for instant result (skip queue entirely)
+    if not body.refresh:
+        cached = cache_get(handle)
+        if cached is not None:
+            job_id = create_job(uid, handle)
+            update_job(
+                job_id,
+                status="completed",
+                result=json.dumps(cached),
+                progress=json.dumps({
+                    "step": 5, "status_key": "complete", "message": "Retrieved from cache"
+                }),
+            )
+            return {
+                "job_id": job_id,
+                "status": "completed",
+                "poll_url": f"/api/v1/jobs/{job_id}",
+                "from_cache": True,
+            }
+
+    # Create job and enqueue background task
+    job_id = create_job(uid, handle)
+    background_tasks.add_task(run_scrape_job, job_id, handle, body.refresh)
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "poll_url": f"/api/v1/jobs/{job_id}",
+    }
+
+
+# ── 2. Poll Job Status ───────────────────────────────────────────
+
+@app.get("/api/v1/jobs/{job_id}")
+async def poll_job_status(
+    job_id: str,
+    _uid: str = Depends(get_current_uid),
+):
+    """
+    Poll the status of a submitted job.
+    Returns current status, progress step, result (if completed), or error (if failed).
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    response = {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "target_handle": job["target_handle"],
+        "progress": job["progress"],
+        "result": job["result"],
+        "error": job["error"],
+        "created_at": job["created_at"],
+    }
+
+    return response
+
+
+# ══════════════════════════════════════════════════════════════════
+#  LEGACY / STANDARD ENDPOINTS
+# ══════════════════════════════════════════════════════════════════
+
+# ── Manual Mode (backward compatible) ────────────────────────────
 
 @app.post("/predict/user", response_model=PredictResponse)
-async def predict_user(request: PredictRequest):
+async def predict_user(request: PredictRequest, _claims=Depends(verify_bearer_token)):
     """
     Classify a Twitter/X account as bot or human.
     
@@ -198,141 +429,10 @@ async def predict_user(request: PredictRequest):
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
 
 
-# ── 2. One-Click SSE Mode (Scweet-powered) ───────────────────────
-
-@app.get("/predict/username/{handle}")
-async def predict_by_username_sse(handle: str, refresh: bool = False):
-    """
-    One-click bot detection via Server-Sent Events.
-    Streams real-time progress updates while scraping the ego-graph,
-    then sends the final RGCN prediction. Uses SSE to prevent cloud
-    platform timeouts (Vercel, HF Spaces) on long-running scrapes.
-    Event types:
-      - "progress": {step, status, message}
-      - "scrape_complete": {scrape_meta}
-      - "result": {PredictResponse data}
-      - "error": {message, status_code}
-    """
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Model not loaded yet.")
-
-    async def event_stream():
-        try:
-            clean_handle = handle.strip().lstrip("@").lower()
-
-            # ── Redis Cache Check ─────────────────────────────────────────
-            if not refresh:
-                cached = cache_get(clean_handle)
-                if cached is not None:
-                    yield f"event: cache_hit\ndata: {json.dumps(cached)}\n\n"
-                    yield f"event: done\ndata: {json.dumps({'status': 'complete', 'from_cache': True})}\n\n"
-                    return
-            else:
-                cache_delete(clean_handle)
-                yield f"event: progress\ndata: {json.dumps({'step': 0, 'status': 'cache_cleared', 'message': 'Cache cleared. Running fresh analysis...'})}\n\n"
-
-            scraper = get_scraper()
-
-            # Progress callback that yields SSE events
-            async def on_progress(step: int, status: str, message: str):
-                event = json.dumps({"step": step, "status": status, "message": message})
-                yield f"event: progress\ndata: {event}\n\n"
-
-            # We need a slightly different approach since the progress callback
-            # can't directly yield from inside scrape_ego_graph.
-            # Instead, we collect progress events and use a queue.
-            import asyncio
-            progress_queue: asyncio.Queue = asyncio.Queue()
-
-            async def progress_callback(step: int, status: str, message: str):
-                await progress_queue.put(("progress", {
-                    "step": step, "status": status, "message": message
-                }))
-
-            # Run the scraper in a task
-            scrape_task = asyncio.create_task(
-                scraper.scrape_ego_graph(handle, progress=progress_callback)
-            )
-
-            # Stream progress events as they arrive
-            while not scrape_task.done():
-                try:
-                    event_type, event_data = await asyncio.wait_for(
-                        progress_queue.get(), timeout=0.5
-                    )
-                    yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
-                except asyncio.TimeoutError:
-                    # Send a keepalive comment to prevent connection timeout
-                    yield ": keepalive\n\n"
-
-            # Drain any remaining progress events
-            while not progress_queue.empty():
-                event_type, event_data = progress_queue.get_nowait()
-                yield f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
-
-            # Get the scraper result
-            request_data, scrape_meta = scrape_task.result()
-
-            # Send scrape summary
-            yield f"event: scrape_complete\ndata: {json.dumps(scrape_meta)}\n\n"
-
-            # Step 5: Run RGCN inference
-            progress_event = json.dumps({
-                "step": 5, "status": "running_rgcn", "message": "Running RGCN inference..."
-            })
-            yield f"event: progress\ndata: {progress_event}\n\n"
-
-            result = engine.predict_from_request(request_data)
-
-            # Add scrape metadata to graph_info
-            result["graph_info"]["scrape_meta"] = scrape_meta
-
-            # Remove the high-follower calibration warning from the frontend result
-            # (it's a technical note, not useful to end users — still logged server-side)
-            if result.get("quality_warning") and "followers" in result["quality_warning"]:
-                result["quality_warning"] = None
-
-            # Send final result
-            yield f"event: result\ndata: {json.dumps(result)}\n\n"
-
-            # Store in Redis cache so the next search for this handle is instant
-            cache_set(clean_handle, result)
-
-            # Signal stream end
-            yield f"event: done\ndata: {json.dumps({'status': 'complete'})}\n\n"
-
-        except ScraperUserNotFoundError as e:
-            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
-            yield f"event: error\ndata: {error_data}\n\n"
-        except ScraperRateLimitError as e:
-            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
-            yield f"event: error\ndata: {error_data}\n\n"
-        except ScraperAuthError as e:
-            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
-            yield f"event: error\ndata: {error_data}\n\n"
-        except ScraperError as e:
-            error_data = json.dumps({"message": str(e), "status_code": e.status_code})
-            yield f"event: error\ndata: {error_data}\n\n"
-        except Exception as e:
-            logger.exception("SSE prediction pipeline failed")
-            error_data = json.dumps({"message": f"Unexpected error: {str(e)}", "status_code": 500})
-            yield f"event: error\ndata: {error_data}\n\n"
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
-        },
-    )
-
-
 # ── Metadata & Health ─────────────────────────────────────────────
 
 @app.get("/model/info")
-async def model_info():
+async def model_info(_claims=Depends(verify_bearer_token)):
     """Return model metadata."""
     return {
         "model": "RGCN",
@@ -361,7 +461,7 @@ async def health():
 
 
 @app.get("/features/schema")
-async def features_schema():
+async def features_schema(_claims=Depends(verify_bearer_token)):
     """Return the 20 feature definitions for the frontend form."""
     return {
         "boolean_features": [

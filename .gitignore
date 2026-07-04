@@ -61,3 +61,8 @@ logs/
 *.local
 .ipynb_checkpoints/
 backend/hf_deploy/
+
+# ── SQLite databases ──────────────────────────────
+*.db
+*.db-shm
+*.db-wal

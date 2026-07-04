@@ -3,7 +3,7 @@ import ProfileForm from '../components/ProfileForm';
 import TweetInput from '../components/TweetInput';
 import RelationsEditor from '../components/RelationsEditor';
 import ResultCard from '../components/ResultCard';
-import { predictUser, predictByUsername } from '../api/predict';
+import { predictUser, submitPrediction, getJobStatus } from '../api/predict';
 import './DetectorPage.css';
 
 // ── Step definitions for the progress stepper ────────────────────
@@ -40,6 +40,15 @@ const INITIAL_PROFILE = {
   profile_background_image_url: false,
 };
 
+// ── Time formatting helper ───────────────────────────────────────
+
+function formatCountdown(totalSeconds) {
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 
 export default function DetectorPage() {
   // ── Mode toggle ────────────────────────────────────────────────
@@ -63,9 +72,9 @@ export default function DetectorPage() {
   const [manualLoading, setManualLoading] = useState(false);
   const [manualError, setManualError] = useState(null);
 
-  // ── One-Click SSE submission ───────────────────────────────────
+  // ── One-Click: Submit → Poll Architecture ──────────────────────
 
-  const handleAutoSubmit = useCallback((e) => {
+  const handleAutoSubmit = useCallback(async (e) => {
     e.preventDefault();
     if (!username.trim() || autoLoading) return;
 
@@ -75,35 +84,81 @@ export default function DetectorPage() {
     setAutoResult(null);
     setScrapeMeta(null);
     setCurrentStep(1);
-    setStepMessage('Connecting...');
+    setStepMessage('Submitting job...');
 
-    // Cancel any existing stream
+    // Cancel any existing poll
     if (abortRef.current) abortRef.current();
 
-    const abort = predictByUsername(username, {
-      onProgress: (data) => {
-        setCurrentStep(data.step);
-        setStepMessage(data.message);
-      },
-      onScrapeComplete: (meta) => {
-        setScrapeMeta(meta);
-      },
-      onResult: (result) => {
-        setAutoResult(result);
-        setAutoLoading(false);
-        setCurrentStep(6); // All done
-      },
-      onError: (err) => {
-        setAutoError(err.message || 'Scraping failed');
-        setAutoLoading(false);
-        setCurrentStep(-1); // Error state
-      },
-      onDone: () => {
-        setAutoLoading(false);
-      },
-    });
+    try {
+      // Submit the job
+      const job = await submitPrediction(username);
 
-    abortRef.current = abort;
+      // If cache hit → instant completion
+      if (job.status === 'completed') {
+        const status = await getJobStatus(job.job_id);
+        if (status.result) {
+          setAutoResult(status.result);
+          setScrapeMeta(status.result.graph_info?.scrape_meta || null);
+        }
+        setCurrentStep(6);
+        setAutoLoading(false);
+        return;
+      }
+
+      // Start polling every 2 seconds
+      let cancelled = false;
+      const pollInterval = setInterval(async () => {
+        if (cancelled) return;
+
+        try {
+          const status = await getJobStatus(job.job_id);
+
+          // Update stepper UI from progress
+          if (status.progress) {
+            setCurrentStep(status.progress.step || 1);
+            setStepMessage(status.progress.message || 'Processing...');
+          }
+
+          if (status.status === 'completed') {
+            clearInterval(pollInterval);
+            if (status.result) {
+              setAutoResult(status.result);
+              setScrapeMeta(status.result.graph_info?.scrape_meta || null);
+            }
+            setCurrentStep(6); // All done
+            setAutoLoading(false);
+          }
+
+          if (status.status === 'failed') {
+            clearInterval(pollInterval);
+            setAutoError(status.error || 'Analysis failed');
+            setCurrentStep(-1); // Error state
+            setAutoLoading(false);
+          }
+        } catch (pollErr) {
+          // Don't kill the loop on transient network errors
+          console.warn('Poll error:', pollErr);
+        }
+      }, 2000);
+
+      // Store cancel function for cleanup
+      abortRef.current = () => {
+        cancelled = true;
+        clearInterval(pollInterval);
+      };
+
+    } catch (err) {
+      if (err.code === 'RATE_LIMITED') {
+        setAutoError(
+          `Rate limit reached — you can analyze one account every 24 hours. ` +
+          `Try again in ${formatCountdown(err.retryAfterSeconds)}.`
+        );
+      } else {
+        setAutoError(err.message || 'Submission failed');
+      }
+      setCurrentStep(-1);
+      setAutoLoading(false);
+    }
   }, [username, autoLoading]);
 
   const handleAutoReset = useCallback(() => {
@@ -202,7 +257,7 @@ export default function DetectorPage() {
         </div>
 
         {/* ═══════════════════════════════════════════════════════════
-            AUTO MODE — One-Click SSE Analysis
+            AUTO MODE — Queue-Based Analysis with Polling
            ═══════════════════════════════════════════════════════════ */}
         {mode === 'auto' && (
           <>
@@ -225,12 +280,13 @@ export default function DetectorPage() {
                       disabled={autoLoading}
                       autoComplete="off"
                       spellCheck="false"
+                      maxLength={15}
                     />
                   </div>
                   <div className="search-actions">
                     <span className="search-hint">
                       {autoLoading
-                        ? 'Scraping ego-graph... please wait.'
+                        ? 'Analyzing... this may take a few minutes.'
                         : 'Enter a public Twitter handle and hit Analyze.'}
                     </span>
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -340,7 +396,7 @@ export default function DetectorPage() {
               <div className="detector-error glass-card animate-fade-in">
                 <span style={{ fontSize: '18px' }}>⚠️</span>
                 <div style={{ flex: 1 }}>
-                  <strong>Scraping Unavailable:</strong> {autoError}
+                  <strong>Analysis Unavailable:</strong> {autoError}
                   <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px', marginBottom: '12px' }}>
                     Twitter/X frequently changes their internal API, which can temporarily break automated scraping.
                     Use <strong>Manual Mode</strong> to enter profile data directly and still run the full RGCN analysis.

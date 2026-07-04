@@ -1,7 +1,15 @@
 /**
  * API client for the MGTAB Bot Detector backend.
- * Supports both manual prediction (POST) and one-click SSE (EventSource).
+ * 
+ * Queue-driven architecture:
+ * - submitPrediction()  → POST /api/v1/predict (returns job_id)
+ * - getJobStatus()      → GET /api/v1/jobs/{job_id} (poll for results)
+ * - predictUser()       → POST /predict/user (manual mode, synchronous)
+ *
+ * All authenticated requests include Authorization: Bearer <JWT>.
  */
+
+import { auth } from '../firebase';
 
 // For local testing:
 // const API_BASE = 'http://localhost:8000';
@@ -9,12 +17,106 @@
 const API_BASE = 'https://arihant0008-mgtab-bot-detector-main.hf.space';
 
 
+// ── Auth Helper ──────────────────────────────────────────────────
+
+/**
+ * Get the current user's Firebase ID token for HTTP requests.
+ * Returns headers object with Authorization: Bearer <token>.
+ * Falls back to empty object if no user is signed in.
+ */
+async function getAuthHeaders() {
+  try {
+    if (auth.currentUser) {
+      const token = await auth.currentUser.getIdToken();
+      return { 'Authorization': `Bearer ${token}` };
+    }
+  } catch (err) {
+    console.warn('Failed to get auth token:', err);
+  }
+  return {};
+}
+
+
+// ── Queue-Driven Endpoints ───────────────────────────────────────
+
+/**
+ * Submit a bot detection job for a Twitter/X handle.
+ * Returns { job_id, status, poll_url, from_cache? }.
+ * 
+ * @throws {Object} { code: 'RATE_LIMITED', retryAfterSeconds, message } on 429
+ * @throws {Error} on other failures
+ */
+export async function submitPrediction(handle, refresh = false) {
+  const authHeaders = await getAuthHeaders();
+  const cleanHandle = handle.replace(/^@/, '').trim();
+
+  const response = await fetch(`${API_BASE}/api/v1/predict`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
+    body: JSON.stringify({
+      target_handle: cleanHandle,
+      refresh,
+    }),
+  });
+
+  if (response.status === 429) {
+    const err = await response.json().catch(() => ({}));
+    const detail = err.detail || {};
+    throw {
+      code: 'RATE_LIMITED',
+      retryAfterSeconds: detail.retry_after_seconds || 86400,
+      message: detail.message || 'Rate limit exceeded. Try again later.',
+    };
+  }
+
+  if (response.status === 422) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error('Invalid handle format. Use only letters, numbers, and underscores (max 15 chars).');
+  }
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || `Submission failed (${response.status})`);
+  }
+
+  return response.json();
+}
+
+
+/**
+ * Poll the status of a submitted job.
+ * Returns { job_id, status, progress, result, error, created_at }.
+ */
+export async function getJobStatus(jobId) {
+  const authHeaders = await getAuthHeaders();
+
+  const response = await fetch(`${API_BASE}/api/v1/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { ...authHeaders },
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.detail || `Failed to fetch job status (${response.status})`);
+  }
+
+  return response.json();
+}
+
+
 // ── Manual Mode (POST /predict/user) ─────────────────────────────
 
 export async function predictUser(requestData) {
+  const authHeaders = await getAuthHeaders();
+
   const response = await fetch(`${API_BASE}/predict/user`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders,
+    },
     body: JSON.stringify(requestData),
   });
 
@@ -27,123 +129,13 @@ export async function predictUser(requestData) {
 }
 
 
-// ── One-Click SSE Mode (GET /predict/username/{handle}) ──────────
-
-/**
- * Connect to the SSE endpoint for one-click username analysis.
- *
- * @param {string} username  — Twitter handle (with or without @)
- * @param {object} callbacks — Event handlers:
- *   - onProgress({step, status, message})
- *   - onScrapComplete(scrapeMeta)
- *   - onResult(predictionResult)
- *   - onError(errorObj)
- *   - onDone()
- * @returns {function} abort — Call this to cancel the stream
- */
-export function predictByUsername(username, callbacks = {}) {
-  const handle = username.replace(/^@/, '').trim();
-  if (!handle) {
-    callbacks.onError?.({ message: 'Username cannot be empty', status_code: 400 });
-    return () => {};
-  }
-
-  const controller = new AbortController();
-
-  // Use fetch + ReadableStream for SSE (more control than EventSource for error handling)
-  (async () => {
-    try {
-      const response = await fetch(`${API_BASE}/predict/username/${encodeURIComponent(handle)}`, {
-        signal: controller.signal,
-        headers: { 'Accept': 'text/event-stream' },
-      });
-
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        callbacks.onError?.({
-          message: err.detail || `Request failed (${response.status})`,
-          status_code: response.status,
-        });
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // Process complete SSE events from the buffer
-        const events = buffer.split('\n\n');
-        buffer = events.pop(); // Keep incomplete event in buffer
-
-        for (const eventBlock of events) {
-          if (!eventBlock.trim()) continue;
-
-          let eventType = 'message';
-          let eventData = '';
-
-          for (const line of eventBlock.split('\n')) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              eventData = line.slice(6);
-            } else if (line.startsWith(':')) {
-              // Comment/keepalive — ignore
-              continue;
-            }
-          }
-
-          if (!eventData) continue;
-
-          try {
-            const data = JSON.parse(eventData);
-
-            switch (eventType) {
-              case 'progress':
-                callbacks.onProgress?.(data);
-                break;
-              case 'scrape_complete':
-                callbacks.onScrapeComplete?.(data);
-                break;
-              case 'cache_hit':   // Redis cache hit — same shape as result
-              case 'result':
-                callbacks.onResult?.(data);
-                break;
-              case 'error':
-                callbacks.onError?.(data);
-                break;
-              case 'done':
-                callbacks.onDone?.();
-                break;
-            }
-          } catch (parseErr) {
-            console.warn('SSE parse error:', parseErr, eventData);
-          }
-        }
-      }
-    } catch (err) {
-      if (err.name === 'AbortError') return; // User cancelled
-      callbacks.onError?.({
-        message: err.message || 'Connection failed',
-        status_code: 0,
-      });
-    }
-  })();
-
-  // Return abort function  
-  return () => controller.abort();
-}
-
-
 // ── Utility endpoints ────────────────────────────────────────────
 
 export async function getModelInfo() {
-  const response = await fetch(`${API_BASE}/model/info`);
+  const authHeaders = await getAuthHeaders();
+  const response = await fetch(`${API_BASE}/model/info`, {
+    headers: { ...authHeaders },
+  });
   if (!response.ok) throw new Error('Failed to fetch model info');
   return response.json();
 }
@@ -155,7 +147,10 @@ export async function getHealth() {
 }
 
 export async function getFeaturesSchema() {
-  const response = await fetch(`${API_BASE}/features/schema`);
+  const authHeaders = await getAuthHeaders();
+  const response = await fetch(`${API_BASE}/features/schema`, {
+    headers: { ...authHeaders },
+  });
   if (!response.ok) throw new Error('Failed to fetch features schema');
   return response.json();
 }
