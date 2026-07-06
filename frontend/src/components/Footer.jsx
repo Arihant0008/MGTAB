@@ -51,13 +51,15 @@ export default function Footer() {
             <span className="footer-authors">
               <span className="footer-author">Arihant</span>
               <span className="footer-comma">,</span>
-              <span className="footer-author">Aayush</span>
-              <span className="footer-comma">&</span>
               <span className="footer-author">Pratham</span>
+              <span className="footer-comma">,</span>
+              <span className="footer-author">Frank</span>
+              <span className="footer-comma">&</span>
+              <span className="footer-author">Aayush</span>
             </span>
           </div>
           <div className="footer-rights">
-            All rights reserved · B.Tech. Final Year Project 
+            All rights reserved 
           </div>
         </div>
 
