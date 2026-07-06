@@ -390,21 +390,25 @@ export default function DetectorPage() {
                 </div>
               </div>
             )}
-
             {/* Error */}
             {autoError && (
               <div className="detector-error glass-card animate-fade-in">
                 <span style={{ fontSize: '18px' }}>⚠️</span>
                 <div style={{ flex: 1 }}>
                   <strong>Analysis Unavailable:</strong> {autoError}
-                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px', marginBottom: '12px' }}>
-                    Twitter/X frequently changes their internal API, which can temporarily break automated scraping.
-                    Use <strong>Manual Mode</strong> to enter profile data directly and still run the full RGCN analysis.
-                  </p>
+                  
+                  {/* Only show the scraper breakdown warning if it's NOT a rate limit error */}
+                  {!autoError.toLowerCase().includes("rate limit") && (
+                    <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '8px', marginBottom: '12px' }}>
+                      Twitter/X frequently changes their internal API, which can temporarily break automated scraping.
+                      Use <strong>Manual Mode</strong> to enter profile data directly and still run the full RGCN analysis.
+                    </p>
+                  )}
+                  
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={() => { setMode('manual'); setAutoError(null); }}
-                    style={{ fontSize: '13px' }}
+                    style={{ fontSize: '13px', marginTop: autoError.toLowerCase().includes("rate limit") ? '8px' : '0' }}
                   >
                     🔧 Switch to Manual Mode
                   </button>
