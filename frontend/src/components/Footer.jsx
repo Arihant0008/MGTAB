@@ -59,7 +59,7 @@ export default function Footer() {
             </span>
           </div>
           <div className="footer-authors">
-            MGTAB-Live: A Production-Ready Multi-Relational Graph-Based Framework for Real-Time Twitter Bot Detection Using Relational Graph Convolutional Networks (Published in Cureus Journal)
+            MGTAB-Live: Real-Time Twitter Bot Detection (Published in Cureus Journal) (link : https://shorturl.at/RGmZx )
           </div>
           <div className="footer-rights">
             All rights reserved 
