@@ -59,7 +59,11 @@ export default function Footer() {
             </span>
           </div>
           <div className="footer-authors">
-            MGTAB-Live: Real-Time Twitter Bot Detection (Published in Cureus Journal) (link : https://shorturl.at/RGmZx )
+            <strong>MGTAB-Live:</strong> Real-Time Twitter/X Bot Detection Platform<br>
+            Published in <strong>Cureus Journal</strong> • 
+            <a href="https://shorturl.at/RGmZx" target="_blank" rel="noopener noreferrer">
+            Read Paper
+            </a>
           </div>
           <div className="footer-rights">
             All rights reserved 
