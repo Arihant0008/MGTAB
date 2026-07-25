@@ -61,7 +61,7 @@ export default function Footer() {
           <div className="footer-authors">
             <strong>MGTAB-Live:</strong> Real-Time Twitter/X Bot Detection Platform
             Published in <strong>Cureus Journal</strong> • 
-            <a href="https://shorturl.at/RGmZx" target="_blank" rel="noopener noreferrer">
+            <a href="https://www.cureusjournals.com/articles/15875-mgtab-live-a-production-ready-multi-relational-graph-based-framework-for-real-time-twitter-bot-detection-using-relational-graph-convolutional-networks#!/" target="_blank" rel="noopener noreferrer">
             Read Paper
             </a>
           </div>
