@@ -49,7 +49,7 @@ export default function Footer() {
             <span className="footer-heart">♥</span>
             <span>by</span>
             <span className="footer-authors">
-              <span className="footer-author">Arihant</span>
+              <span className="footer-author">Arihant Jain</span>
               <span className="footer-comma">,</span>
               <span className="footer-author">Pratham</span>
               <span className="footer-comma">,</span>
@@ -57,6 +57,9 @@ export default function Footer() {
               <span className="footer-comma">&</span>
               <span className="footer-author">Aayush</span>
             </span>
+          </div>
+          <div className="footer-rights">
+            MGTAB-Live: A Production-Ready Multi-Relational Graph-Based Framework for Real-Time Twitter Bot Detection Using Relational Graph Convolutional Networks (Published in Cureus Journal)
           </div>
           <div className="footer-rights">
             All rights reserved 
