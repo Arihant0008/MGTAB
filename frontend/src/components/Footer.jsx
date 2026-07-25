@@ -58,7 +58,7 @@ export default function Footer() {
               <span className="footer-author">Aayush</span>
             </span>
           </div>
-          <div className="footer-rights">
+          <div className="footer-authors">
             MGTAB-Live: A Production-Ready Multi-Relational Graph-Based Framework for Real-Time Twitter Bot Detection Using Relational Graph Convolutional Networks (Published in Cureus Journal)
           </div>
           <div className="footer-rights">
